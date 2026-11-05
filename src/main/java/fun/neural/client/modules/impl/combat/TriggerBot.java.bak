@@ -1,0 +1,262 @@
+package fun.neural.client.modules.impl.combat;
+
+import net.minecraft.entity.Entity;
+import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.decoration.ArmorStandEntity;
+import net.minecraft.entity.effect.StatusEffects;
+import net.minecraft.entity.mob.HostileEntity;
+import net.minecraft.entity.passive.AnimalEntity;
+import net.minecraft.entity.passive.PassiveEntity;
+import net.minecraft.entity.passive.VillagerEntity;
+import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.item.AxeItem;
+import net.minecraft.item.Item;
+import net.minecraft.item.Items;
+import net.minecraft.item.SwordItem;
+import net.minecraft.network.packet.c2s.play.ClientCommandC2SPacket;
+import net.minecraft.util.Hand;
+import net.minecraft.util.hit.EntityHitResult;
+
+import fun.neural.Neural;
+import fun.neural.api.events.EventLink;
+import fun.neural.api.events.implement.EventUpdate;
+import fun.neural.api.storages.implement.helpertstorages.enumvar.ModuleClass;
+import fun.neural.api.utils.combat.IdealHitUtils;
+import fun.neural.client.modules.Module;
+import fun.neural.client.modules.settings.implement.BooleanSetting;
+import fun.neural.client.modules.settings.implement.FloatSetting;
+import fun.neural.client.modules.settings.implement.ListSetting;
+import fun.neural.client.modules.settings.implement.ModeSetting;
+
+import java.util.concurrent.ThreadLocalRandom;
+
+public class TriggerBot extends Module {
+
+    public static TriggerBot INSTANCE = new TriggerBot();
+
+    private final ListSetting targets = new ListSetting("Цели",
+            new BooleanSetting("Игроки", true),
+            new BooleanSetting("Друзья", false),
+            new BooleanSetting("Боты", false),
+            new BooleanSetting("Голые", true),
+            new BooleanSetting("Невидимки", false),
+            new BooleanSetting("Животные", false),
+            new BooleanSetting("Мобы", true),
+            new BooleanSetting("Жители", false)
+    );
+
+    private final BooleanSetting criticalsOnly = new BooleanSetting("Только криты", false);
+    private final BooleanSetting toggleSprint = new BooleanSetting("Сброс спринта", true);
+    private final BooleanSetting waterCriticals = new BooleanSetting("Криты в воде", true).visible(criticalsOnly::isState);
+    private final BooleanSetting spaceOnly = new BooleanSetting("Только при прыжке", false).visible(criticalsOnly::isState);
+    private final BooleanSetting weaponOnly = new BooleanSetting("Только с оружием", false);
+    private final BooleanSetting stopOnEat = new BooleanSetting("Стоп во время еды", false);
+    private final ModeSetting attackMode = new ModeSetting("Режим атаки", "1.9+", "1.9+", "1.8");
+    private final FloatSetting cpsMin = new FloatSetting("CPS (мин)", 8f, 5f, 20f, 1f).visible(() -> attackMode.is("1.8"));
+    private final FloatSetting cpsMax = new FloatSetting("CPS (макс)", 12f, 5f, 20f, 1f).visible(() -> attackMode.is("1.8"));
+    private final ModeSetting sprintReset = new ModeSetting("Режим сброса спринта", "Packet", "FT", "Packet", "Semi-Legit", "Legit").visible(toggleSprint::isState);
+    private final BooleanSetting tpsSync = new BooleanSetting("TPS Sync", false);
+    private final FloatSetting attackRange = new FloatSetting("Дистанция атаки", 3f, 1f, 6f, 0.1f);
+
+    private LivingEntity target;
+    private boolean attackReady;
+    private long lastAttackTime;
+    private boolean sprintResetting;
+
+    public TriggerBot() {
+        super("TriggerBot", "Автоматически бьёт того, на кого вы смотрите", ModuleCategory.COMBAT);
+        addSettings(targets, criticalsOnly, toggleSprint, waterCriticals, spaceOnly, weaponOnly,
+                stopOnEat, attackMode, cpsMin, cpsMax, sprintReset, tpsSync, attackRange);
+    }
+
+    @EventLink
+    public void onTick(EventUpdate event) {
+        if (mc == null || mc.player == null || mc.world == null || mc.interactionManager == null) {
+            clearTarget();
+            return;
+        }
+
+        if (!isEnable()) {
+            clearTarget();
+            return;
+        }
+
+        if (weaponOnly.isState() && !isHoldingWeapon()) {
+            clearTarget();
+            return;
+        }
+
+        if (stopOnEat.isState() && mc.player.isUsingItem()) {
+            clearTarget();
+            return;
+        }
+
+        if (!checkCritCondition()) {
+            clearTarget();
+            return;
+        }
+
+        LivingEntity entity = getCrosshairTarget();
+        if (entity == null) {
+            clearTarget();
+            return;
+        }
+
+        target = entity;
+        attackReady = true;
+
+        if (canAttack()) {
+            attack();
+        }
+    }
+
+    private boolean checkCritCondition() {
+        if (!criticalsOnly.isState()) return true;
+
+        if (spaceOnly.isState() && mc.options != null && !mc.options.jumpKey.isPressed()) {
+            return false;
+        }
+
+        if (waterCriticals.isState() && (mc.player.isTouchingWater() || mc.player.isSubmergedInWater())) {
+            return true;
+        }
+
+        return !mc.player.isOnGround()
+                && mc.player.getVelocity().y <= 0
+                && mc.player.fallDistance > 0;
+    }
+
+    private boolean canAttack() {
+        if (attackMode.is("1.8")) {
+            int minCps = cpsMin.getValue().intValue();
+            int maxCps = cpsMax.getValue().intValue();
+            int cps = minCps >= maxCps ? minCps : ThreadLocalRandom.current().nextInt(minCps, maxCps + 1);
+            long cooldown = 1000L / Math.max(1, cps);
+
+            if (tpsSync.isState() && ModuleClass.INSTANCE != null && ModuleClass.INSTANCE.tpsSync != null) {
+                cooldown = ModuleClass.INSTANCE.tpsSync.getAdjustedCooldown(cooldown);
+            }
+
+            return System.currentTimeMillis() - lastAttackTime >= cooldown;
+        }
+
+        float cooldown = mc.player.getAttackCooldownProgress(mc.getRenderTickCounter().getTickDelta(true));
+        return cooldown >= IdealHitUtils.getAICooldown();
+    }
+
+    private void attack() {
+        if (target == null || !isValidTarget(target)) {
+            clearTarget();
+            return;
+        }
+
+        if (toggleSprint.isState() && mc.player.isSprinting() && !sprintResetting) {
+            sprintResetting = true;
+            doSprintReset();
+            return;
+        }
+
+        if (sprintResetting) {
+            finishSprintReset();
+        }
+
+        mc.interactionManager.attackEntity(mc.player, target);
+        mc.player.swingHand(Hand.MAIN_HAND);
+        lastAttackTime = System.currentTimeMillis();
+        attackReady = false;
+        target = null;
+    }
+
+    private void doSprintReset() {
+        String mode = sprintReset.getCurrent();
+        mc.player.setSprinting(false);
+        if (mc.player.networkHandler == null || mode == null) return;
+
+        switch (mode) {
+            case "Packet", "FT" -> mc.player.networkHandler.sendPacket(
+                    new ClientCommandC2SPacket(mc.player, ClientCommandC2SPacket.Mode.STOP_SPRINTING));
+        }
+    }
+
+    private void finishSprintReset() {
+        sprintResetting = false;
+    }
+
+    private void clearTarget() {
+        target = null;
+        attackReady = false;
+        finishSprintReset();
+    }
+
+    private boolean isHoldingWeapon() {
+        Item item = mc.player.getMainHandStack().getItem();
+        return item == Items.AIR || item instanceof SwordItem || item instanceof AxeItem;
+    }
+
+    private LivingEntity getCrosshairTarget() {
+        net.minecraft.util.math.Vec3d eyes = mc.player.getEyePos();
+        net.minecraft.util.math.Vec3d look = mc.player.getRotationVec(1.0F);
+        float reach = attackRange.get();
+        net.minecraft.util.math.Vec3d end = eyes.add(look.multiply(reach));
+
+        EntityHitResult result = net.minecraft.entity.projectile.ProjectileUtil.raycast(
+                mc.player, eyes, end,
+                mc.player.getBoundingBox().expand(reach),
+                e -> e != mc.player && e.isAlive(),
+                reach * reach);
+
+        if (result == null || !(result.getEntity() instanceof LivingEntity living)) return null;
+        if (!isValidTarget(living)) return null;
+        if (mc.player.squaredDistanceTo(living) > reach * reach) return null;
+        if (isLineBlocked(eyes, end)) return null;
+        return living;
+    }
+
+    private boolean isLineBlocked(net.minecraft.util.math.Vec3d from, net.minecraft.util.math.Vec3d to) {
+        if (mc.world == null) return false;
+        net.minecraft.util.hit.BlockHitResult hit = mc.world.raycast(new net.minecraft.world.RaycastContext(
+                from, to,
+                net.minecraft.world.RaycastContext.ShapeType.COLLIDER,
+                net.minecraft.world.RaycastContext.FluidHandling.NONE,
+                mc.player));
+        return hit.getType() == net.minecraft.util.hit.HitResult.Type.BLOCK;
+    }
+
+    private boolean isValidTarget(LivingEntity entity) {
+        if (entity == null || !entity.isAlive() || entity == mc.player) return false;
+        if (entity instanceof ArmorStandEntity) return false;
+
+        if (AntiBot.checkBot(entity) && !targets.is("Боты")) return false;
+
+        if (entity instanceof PlayerEntity player) {
+            if (!targets.is("Игроки")) return false;
+            if (!targets.is("Друзья") && isFriend(player)) return false;
+            if (!targets.is("Голые") && isNaked(player)) return false;
+            if (!targets.is("Невидимки") && player.hasStatusEffect(StatusEffects.INVISIBILITY)) return false;
+        } else if (entity instanceof VillagerEntity) {
+            if (!targets.is("Жители")) return false;
+        } else if (entity instanceof AnimalEntity || entity instanceof PassiveEntity) {
+            if (!targets.is("Животные")) return false;
+        } else if (entity instanceof HostileEntity) {
+            if (!targets.is("Мобы")) return false;
+        }
+
+        return true;
+    }
+
+    private boolean isNaked(PlayerEntity player) {
+        for (var armorStack : player.getArmorItems()) {
+            if (!armorStack.isEmpty()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean isFriend(Entity entity) {
+        return Neural.INSTANCE != null
+                && Neural.INSTANCE.friendStorage != null
+                && entity instanceof PlayerEntity player
+                && Neural.INSTANCE.friendStorage.isFriend(player.getName().getString());
+    }
+}

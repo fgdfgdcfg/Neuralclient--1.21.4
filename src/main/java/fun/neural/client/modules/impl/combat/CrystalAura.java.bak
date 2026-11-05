@@ -1,0 +1,2251 @@
+package fun.neural.client.modules.impl.combat;
+
+import com.mojang.blaze3d.systems.RenderSystem;
+import fun.neural.Neural;
+import fun.neural.api.events.EventLink;
+import fun.neural.api.events.Priority;
+import fun.neural.api.events.implement.Event3DRender;
+import fun.neural.api.events.implement.EventPacket;
+import fun.neural.api.events.implement.EventUpdate;
+import fun.neural.api.storages.implement.RotationStorage;
+import fun.neural.api.utils.animation.AnimationUtils;
+import fun.neural.api.utils.animation.Easings;
+import fun.neural.api.utils.color.ColorUtils;
+import fun.neural.api.utils.combat.CrystalDamageCalculator;
+import fun.neural.api.utils.input.KeyBoardUtils;
+import fun.neural.api.utils.player.HotbarUtil;
+import fun.neural.api.utils.rotate.Rotation;
+import fun.neural.api.utils.rotate.RotationUtils;
+import fun.neural.client.modules.Module;
+import fun.neural.client.modules.settings.implement.BindSetting;
+import fun.neural.client.modules.settings.implement.BooleanSetting;
+import fun.neural.client.modules.settings.implement.FloatSetting;
+import fun.neural.client.modules.settings.implement.ListSetting;
+import fun.neural.client.modules.settings.implement.ModeSetting;
+import net.minecraft.block.Block;
+import net.minecraft.block.BlockState;
+import net.minecraft.block.Blocks;
+import net.minecraft.client.gl.ShaderProgramKeys;
+import net.minecraft.client.network.PlayerListEntry;
+import net.minecraft.client.render.BufferBuilder;
+import net.minecraft.client.render.BufferRenderer;
+import net.minecraft.client.render.Tessellator;
+import net.minecraft.client.render.VertexFormat;
+import net.minecraft.client.render.VertexFormats;
+import net.minecraft.client.util.math.MatrixStack;
+import net.minecraft.entity.Entity;
+import net.minecraft.entity.ExperienceOrbEntity;
+import net.minecraft.entity.decoration.EndCrystalEntity;
+import net.minecraft.entity.effect.StatusEffectInstance;
+import net.minecraft.entity.effect.StatusEffects;
+import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.item.AxeItem;
+import net.minecraft.item.EndCrystalItem;
+import net.minecraft.item.Item;
+import net.minecraft.item.ItemStack;
+import net.minecraft.item.Items;
+import net.minecraft.item.PickaxeItem;
+import net.minecraft.item.ShovelItem;
+import net.minecraft.item.SwordItem;
+import net.minecraft.network.packet.Packet;
+import net.minecraft.network.packet.c2s.play.CloseHandledScreenC2SPacket;
+import net.minecraft.network.packet.c2s.play.HandSwingC2SPacket;
+import net.minecraft.network.packet.c2s.play.PlayerInteractEntityC2SPacket;
+import net.minecraft.network.packet.c2s.play.UpdateSelectedSlotC2SPacket;
+import net.minecraft.network.packet.s2c.play.EntitySpawnS2CPacket;
+import net.minecraft.network.packet.s2c.play.ExperienceOrbSpawnS2CPacket;
+import net.minecraft.network.packet.s2c.play.ExplosionS2CPacket;
+import net.minecraft.screen.slot.SlotActionType;
+import net.minecraft.util.Hand;
+import net.minecraft.util.hit.BlockHitResult;
+import net.minecraft.util.hit.HitResult;
+import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Box;
+import net.minecraft.util.math.Direction;
+import net.minecraft.util.math.MathHelper;
+import net.minecraft.util.math.Vec2f;
+import net.minecraft.util.math.Vec3d;
+import net.minecraft.world.RaycastContext;
+import org.joml.Matrix4f;
+
+import java.lang.reflect.Field;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
+public class CrystalAura extends Module {
+
+    private static final float RENDER_BOX_SIZE = 1.0f;
+
+    private static final int COLOR_CRYSTAL = 0xFF9C3CFF;
+    private static final int COLOR_OBSIDIAN = 0xFF2E7DFF;
+    private static final int COLOR_DIG = 0xFFFFD400;
+    private static final int COLOR_ERROR = 0xFFFF2A2A;
+
+    public static final CrystalAura INSTANCE = new CrystalAura();
+
+    // ===== Страница =====
+    public final ModeSetting page = new ModeSetting("Страница", "Main",
+            "Main", "Place", "Break", "Damages", "Pause", "Render", "Switch", "FailSafe", "IDPredict", "Dig");
+
+    // ===== Main =====
+    public final BooleanSetting await = new BooleanSetting("Await", true).visible(() -> page.is("Main"));
+    public final ModeSetting timing = new ModeSetting("Timing", "NORMAL", "NORMAL", "SEQUENTIAL").visible(() -> page.is("Main"));
+    public final ModeSetting sequential = new ModeSetting("Sequential", "Strong", "Off", "Strict", "Strong").visible(() -> page.is("Main"));
+    public final ModeSetting rotate = new ModeSetting("Rotate", "Smooth", "Off", "Instant", "Smooth", "Stepped").visible(() -> page.is("Main"));
+    public final BooleanSetting yawStep = new BooleanSetting("YawStep", false).visible(() -> page.is("Main") && !rotate.is("Off"));
+    public final FloatSetting yawAngle = new FloatSetting("YawAngle", 180f, 1f, 180f, 1f).visible(() -> page.is("Main") && !rotate.is("Off") && yawStep.isState());
+    public final ModeSetting targetLogic = new ModeSetting("TargetLogic", "Distance", "Distance", "Health").visible(() -> page.is("Main"));
+    public final FloatSetting targetRange = new FloatSetting("TargetRange", 10f, 1f, 15f, 0.1f).visible(() -> page.is("Main"));
+
+    // ===== Place =====
+    public final ModeSetting interact = new ModeSetting("Interact", "Default", "Default", "Strict").visible(() -> page.is("Place"));
+    public final BooleanSetting strictCenter = new BooleanSetting("CCStrict", true).visible(() -> page.is("Place") && interact.is("Strict"));
+    public final BooleanSetting rayTraceBypass = new BooleanSetting("RayTraceBypass", false).visible(() -> page.is("Place"));
+    public final FloatSetting placeDelay = new FloatSetting("PlaceDelay", 0f, 0f, 20f, 1f).visible(() -> page.is("Place"));
+    public final FloatSetting placeRange = new FloatSetting("PlaceRange", 5f, 1f, 6f, 0.1f).visible(() -> page.is("Place"));
+    public final FloatSetting placeWallRange = new FloatSetting("PlaceWallRange", 3.5f, 0f, 6f, 0.1f).visible(() -> page.is("Place"));
+
+    // ===== Break =====
+    public final BooleanSetting inhibit = new BooleanSetting("Inhibit", true).visible(() -> page.is("Break"));
+    public final FloatSetting breakDelay = new FloatSetting("BreakDelay", 0f, 0f, 20f, 1f).visible(() -> page.is("Break"));
+    public final FloatSetting explodeRange = new FloatSetting("BreakRange", 5f, 1f, 6f, 0.1f).visible(() -> page.is("Break"));
+    public final FloatSetting explodeWallRange = new FloatSetting("BreakWallRange", 3.5f, 0f, 6f, 0.1f).visible(() -> page.is("Break"));
+
+    // ===== Damages =====
+    public final FloatSetting minDamage = new FloatSetting("MinDamage", 6f, 2f, 20f, 0.1f).visible(() -> page.is("Damages"));
+    public final FloatSetting maxSelfDamage = new FloatSetting("MaxSelfDamage", 10f, 2f, 20f, 0.1f).visible(() -> page.is("Damages"));
+    public final BooleanSetting efficiency = new BooleanSetting("Efficiency", false).visible(() -> page.is("Damages"));
+    public final FloatSetting efficiencyFactor = new FloatSetting("EfficiencyFactor", 1f, 0.1f, 5f, 0.1f).visible(() -> page.is("Damages") && efficiency.isState());
+    public final BooleanSetting protectFriends = new BooleanSetting("ProtectFriends", true).visible(() -> page.is("Damages"));
+    public final BooleanSetting overrideSelfDamage = new BooleanSetting("OverrideSelfDamage", true).visible(() -> page.is("Damages"));
+    public final BooleanSetting sacrificeTotem = new BooleanSetting("SacrificeTotem", true).visible(() -> page.is("Damages") && overrideSelfDamage.isState());
+    public final BooleanSetting armorBreaker = new BooleanSetting("ArmorBreaker", true).visible(() -> page.is("Damages"));
+    public final FloatSetting armorScale = new FloatSetting("Armor %", 5f, 0f, 40f, 0.1f).visible(() -> page.is("Damages") && armorBreaker.isState());
+    public final FloatSetting facePlaceHp = new FloatSetting("FacePlaceHp", 5f, 0f, 20f, 0.1f).visible(() -> page.is("Damages"));
+    public final BindSetting facePlaceButton = new BindSetting("FacePlaceBtn", -1).visible(() -> page.is("Damages"));
+    public final BooleanSetting ignoreTerrain = new BooleanSetting("IgnoreTerrain", true).visible(() -> page.is("Damages"));
+
+    // ===== Pause =====
+    public final BooleanSetting mining = new BooleanSetting("Mining", true).visible(() -> page.is("Pause"));
+    public final BooleanSetting eating = new BooleanSetting("Eating", true).visible(() -> page.is("Pause"));
+    public final BooleanSetting inventoryPause = new BooleanSetting("Inventory", false).visible(() -> page.is("Pause"));
+    public final FloatSetting pauseHP = new FloatSetting("HP", 8f, 2f, 10f, 0.1f).visible(() -> page.is("Pause"));
+
+    // ===== Switch =====
+    public final ModeSetting autoSwitch = new ModeSetting("Switch", "NORMAL", "NONE", "NORMAL", "SILENT", "INVENTORY").visible(() -> page.is("Switch"));
+    public final ModeSetting antiWeakness = new ModeSetting("AntiWeakness", "SILENT", "NONE", "NORMAL", "SILENT", "INVENTORY").visible(() -> page.is("Switch"));
+
+    // ===== FailSafe =====
+    public final BooleanSetting placeFailsafe = new BooleanSetting("PlaceFailsafe", true).visible(() -> page.is("FailSafe"));
+    public final BooleanSetting breakFailsafe = new BooleanSetting("BreakFailsafe", true).visible(() -> page.is("FailSafe"));
+    public final FloatSetting attempts = new FloatSetting("MaxAttempts", 5f, 1f, 30f, 1f).visible(() -> page.is("FailSafe"));
+
+    // ===== IDPredict =====
+    public final BooleanSetting idPredict = new BooleanSetting("IDPredict", false).visible(() -> page.is("IDPredict"));
+    public final FloatSetting idAttacks = new FloatSetting("IDAttacks", 3f, 1f, 10f, 1f).visible(() -> page.is("IDPredict"));
+
+    // ===== Dig =====
+    public final BooleanSetting autoObsidian = new BooleanSetting("AutoObsidian", true).visible(() -> page.is("Dig"));
+    public final ModeSetting digMode = new ModeSetting("DigMode", "SILENT", "SILENT", "NORMAL").visible(() -> page.is("Dig"));
+    public final FloatSetting digDelay = new FloatSetting("DigDelay", 4f, 1f, 20f, 1f).visible(() -> page.is("Dig"));
+    public final FloatSetting obsidianDelay = new FloatSetting("ObsidianDelay", 6f, 1f, 20f, 1f).visible(() -> page.is("Dig"));
+
+
+    // ===== Render =====
+    public final ModeSetting swingMode = new ModeSetting("Swing", "Place", "Both", "Place", "Break", "ServerSide").visible(() -> page.is("Render"));
+    public final ListSetting renderSettings = new ListSetting("Render",
+            new BooleanSetting("Block", true),
+            new BooleanSetting("Rect", true),
+            new BooleanSetting("Animate", true)
+    ).visible(() -> page.is("Render"));
+    public final FloatSetting renderHoldMs = new FloatSetting("RenderHoldMs", 500f, 100f, 1000f, 10f).visible(() -> page.is("Render"));
+
+    private final AnimationUtils blockRenderAnim = new AnimationUtils(0f, 11f, Easings.LINEAR);
+    private final CrystalTracker crystalTracker = new CrystalTracker();
+    private final Map<BlockPos, RenderBox> renderPositions = new ConcurrentHashMap<>();
+
+    private PlayerEntity target;
+    private PlaceData currentData;
+    private BlockHitResult bestPosition;
+    private EndCrystalEntity bestCrystal;
+    private EndCrystalEntity secondaryCrystal;
+    private Vec3d rotationTarget;
+    private float renderDamage;
+    private float renderSelfDamage;
+    private float blockRenderFactor;
+
+    private boolean rotated;
+    private boolean rotating;
+    private boolean placedOnSpawn;
+    private boolean initialized;
+
+    private long currentId;
+    private int lastTargetId = -1;
+
+    private int placeTicks;
+    private int breakTicks;
+    private int calcTicks;
+    private int rotationTicks;
+
+    private BlockPos renderPos;
+
+    private BlockPos buildBase;
+    private BlockPos digPos;
+    private int digTicks;
+    private int obsidianTicks;
+    private int obsidianReadyTicks;
+    private int buildTicks;
+    private int digSwappedSlot = -1;
+    private int digPrevSlot = -1;
+    private long lastWallDigTime;
+    private BlockPos lastWallDigPos;
+    private Direction lastWallDigDir;
+    private int buildPhase;
+
+    public CrystalAura() {
+        super("CrystalAura", "Автоматически ставит кристаллы и взрывает их", ModuleCategory.COMBAT);
+        addSettings(
+                page,
+                await, timing, sequential, rotate, yawStep, yawAngle, targetLogic, targetRange,
+                interact, strictCenter, rayTraceBypass, placeDelay, placeRange, placeWallRange,
+                inhibit, breakDelay, explodeRange, explodeWallRange,
+                minDamage, maxSelfDamage, efficiency, efficiencyFactor, protectFriends,
+                overrideSelfDamage, sacrificeTotem, armorBreaker, armorScale, facePlaceHp, facePlaceButton, ignoreTerrain,
+                mining, eating, inventoryPause, pauseHP,
+                autoSwitch, antiWeakness,
+                placeFailsafe, breakFailsafe, attempts,
+                idPredict, idAttacks,
+                autoObsidian, digMode, digDelay, obsidianDelay,
+                swingMode, renderSettings, renderHoldMs
+        );
+    }
+
+    @EventLink
+    public void onPacket(EventPacket event) {
+        if (event.getType() != EventPacket.Type.RECEIVE) {
+            return;
+        }
+        if (mc.player == null || mc.world == null) {
+            return;
+        }
+
+        if (event.getPacket() instanceof ExperienceOrbSpawnS2CPacket spawn) {
+            processSpawnPacket(spawn.getEntityId());
+        } else if (event.getPacket() instanceof EntitySpawnS2CPacket spawn) {
+            processSpawnPacket(spawn.getEntityId());
+            confirmAwaitingBySpawn(spawn.getEntityId(), resolveEntitySpawnPos(spawn));
+        } else if (event.getPacket() instanceof ExplosionS2CPacket explosion) {
+            Vec3d explosionPos = resolveExplosionPos(explosion);
+            for (Entity ent : mc.world.getEntities()) {
+                if (!(ent instanceof EndCrystalEntity crystal)) {
+                    continue;
+                }
+                if (crystal.squaredDistanceTo(explosionPos) <= 144.0 && !crystalTracker.isDead(crystal.getId())) {
+                    crystalTracker.setDead(crystal.getId(), System.currentTimeMillis());
+                }
+            }
+        }
+    }
+
+    @EventLink
+    public void onUpdate(EventUpdate event) {
+        if (mc.player == null || mc.world == null || mc.interactionManager == null) {
+            return;
+        }
+
+        if (!initialized) {
+            reset();
+            initialized = true;
+        }
+
+        tickTimers();
+        crystalTracker.update();
+        cleanupRenderPositions();
+        processAwaitingSpawnConfirm();
+
+        target = findTarget(targetRange.get(), targetLogic.getCurrent());
+        if (target != null && (!target.isAlive() || target.getHealth() <= 0.0f)) {
+            target = null;
+            clearCombatContext();
+            return;
+        }
+
+        if (target == null) {
+            clearCombatContext();
+            return;
+        }
+
+        if (passedTicks(placeTicks, 20)) {
+            renderDamage = 0.0f;
+        }
+
+        calcRotations();
+
+        boolean targetChanged = lastTargetId != target.getId();
+        if (targetChanged) {
+            lastTargetId = target.getId();
+            calcTicks = Integer.MAX_VALUE;
+        }
+
+        int pingGate = Math.max(1, Math.round(getPing() / 25f));
+        if (targetChanged || bestPosition == null || !await.isState() || passedTicks(placeTicks, 20) || passedTicks(calcTicks, pingGate)) {
+            calcPosition(placeRange.get(), mc.player.getPos());
+        }
+
+        getCrystalToExplode();
+
+        processBuild();
+
+        doAction();
+    }
+
+    @EventLink(priority = Priority.HIGH)
+    public void onRender3D(Event3DRender event) {
+        cleanupRenderPositions();
+
+        boolean canRenderBlock = render("Block") && !renderPositions.isEmpty();
+        float blockAnim = animate(blockRenderAnim, canRenderBlock);
+        blockRenderFactor = blockAnim;
+
+        if (!canRenderBlock || blockAnim <= 0.01f) {
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+        long holdMs = (long) renderHoldMs.get();
+
+        MatrixStack matrices = event.getMatrices();
+        Vec3d camera = event.getCamera().getPos();
+        matrices.push();
+        matrices.translate(-camera.x, -camera.y, -camera.z);
+        Matrix4f matrix = matrices.peek().getPositionMatrix();
+
+        RenderSystem.enableBlend();
+        RenderSystem.defaultBlendFunc();
+        RenderSystem.disableCull();
+        RenderSystem.disableDepthTest();
+        RenderSystem.depthMask(false);
+        RenderSystem.setShader(ShaderProgramKeys.POSITION_COLOR);
+
+        Tessellator tessellator = Tessellator.getInstance();
+        BufferBuilder fillBuffer = tessellator.begin(VertexFormat.DrawMode.QUADS, VertexFormats.POSITION_COLOR);
+        for (Map.Entry<BlockPos, RenderBox> entry : renderPositions.entrySet()) {
+            BlockPos pos = entry.getKey();
+            RenderBox box = entry.getValue();
+            long elapsed = now - box.time();
+            if (elapsed > holdMs) {
+                continue;
+            }
+            float fade = 1.0f - MathHelper.clamp(elapsed / (float) holdMs, 0.0f, 1.0f);
+            float alpha = 56f / 255f * blockAnim * fade;
+            float r = ColorUtils.redf(box.color());
+            float g = ColorUtils.greenf(box.color());
+            float b = ColorUtils.bluef(box.color());
+            addFilledBox(fillBuffer, matrix, pos, r, g, b, alpha);
+        }
+        BufferRenderer.drawWithGlobalProgram(fillBuffer.end());
+
+        if (render("Rect")) {
+            BufferBuilder lineBuffer = tessellator.begin(VertexFormat.DrawMode.DEBUG_LINES, VertexFormats.POSITION_COLOR);
+            for (Map.Entry<BlockPos, RenderBox> entry : renderPositions.entrySet()) {
+                BlockPos pos = entry.getKey();
+                RenderBox box = entry.getValue();
+                long elapsed = now - box.time();
+                if (elapsed > holdMs) {
+                    continue;
+                }
+                float fade = 1.0f - MathHelper.clamp(elapsed / (float) holdMs, 0.0f, 1.0f);
+                float alpha = 160f / 255f * blockAnim * fade;
+                float r = ColorUtils.redf(box.color());
+                float g = ColorUtils.greenf(box.color());
+                float b = ColorUtils.bluef(box.color());
+                addOutlinedBox(lineBuffer, matrix, pos, r, g, b, alpha);
+            }
+            BufferRenderer.drawWithGlobalProgram(lineBuffer.end());
+        }
+
+        RenderSystem.enableCull();
+        RenderSystem.enableDepthTest();
+        RenderSystem.depthMask(true);
+        RenderSystem.disableBlend();
+
+        matrices.pop();
+    }
+
+    @Override
+    public void onDisable() {
+        reset();
+        super.onDisable();
+    }
+
+    private void reset() {
+        renderDamage = 0.0f;
+        renderSelfDamage = 0.0f;
+        currentId = 0L;
+        lastTargetId = -1;
+        blockRenderFactor = 0.0f;
+        placeTicks = 0;
+        breakTicks = 0;
+        calcTicks = 0;
+        rotationTicks = 0;
+        renderPositions.clear();
+        crystalTracker.reset();
+        bestCrystal = null;
+        bestPosition = null;
+        secondaryCrystal = null;
+        currentData = null;
+        renderPos = null;
+        target = null;
+        rotationTarget = null;
+        placedOnSpawn = false;
+        initialized = false;
+        blockRenderAnim.setValue(0f);
+        buildBase = null;
+        digPos = null;
+        digTicks = 0;
+        buildPhase = 0;
+        obsidianTicks = 0;
+        obsidianReadyTicks = 0;
+        buildTicks = 0;
+        endDigTool();
+        lastWallDigTime = 0L;
+        lastWallDigPos = null;
+        lastWallDigDir = null;
+    }
+
+    private void tickTimers() {
+        placeTicks++;
+        breakTicks++;
+        calcTicks++;
+    }
+
+    private void doAction() {
+        if (target == null) {
+            return;
+        }
+
+        if (sequential.is("Off")) {
+            if (bestCrystal != null && passedTicks(breakTicks, (int) breakDelay.get())) {
+                attackCrystal(bestCrystal);
+            } else if (bestPosition != null && passedTicks(placeTicks, (int) placeDelay.get()) && !placedOnSpawn) {
+                placeCrystal(bestPosition, false, false);
+            }
+        } else {
+            if (bestCrystal != null && passedTicks(breakTicks, (int) breakDelay.get())) {
+                attackCrystal(bestCrystal);
+            }
+            if (bestPosition != null && passedTicks(placeTicks, (int) placeDelay.get()) && !placedOnSpawn) {
+                placeCrystal(bestPosition, false, false);
+            }
+        }
+        placedOnSpawn = false;
+    }
+
+    private void clearCombatContext() {
+        bestCrystal = null;
+        bestPosition = null;
+        secondaryCrystal = null;
+        currentData = null;
+        rotationTarget = null;
+        renderPos = null;
+        digPos = null;
+    }
+
+    private void processBuild() {
+        if (mc.player == null || mc.world == null || mc.interactionManager == null || target == null) {
+            return;
+        }
+        if (!autoObsidian.isState() || shouldPause()) {
+            return;
+        }
+        if (bestPosition != null || bestCrystal != null) {
+            return;
+        }
+
+        if (obsidianReadyTicks > 0) {
+            obsidianReadyTicks--;
+            if (obsidianReadyTicks == 0) {
+                calcTicks = Integer.MAX_VALUE;
+                calcPosition(placeRange.get(), mc.player.getPos());
+            }
+            return;
+        }
+
+        if (buildBase == null) {
+            buildBase = findBuildBase();
+            if (buildBase == null) {
+                return;
+            }
+            buildPhase = 0;
+            digTicks = 0;
+            obsidianTicks = 0;
+            digPos = null;
+            lastWallDigTime = 0L;
+            buildTicks = 0;
+        }
+
+        buildTicks++;
+        if (buildTicks > 40) {
+            abortBuild();
+            return;
+        }
+
+        if (!isBuildReachable(buildBase)) {
+            abortBuild();
+            return;
+        }
+
+        Block block = mc.world.getBlockState(buildBase).getBlock();
+        if (block == Blocks.OBSIDIAN || block == Blocks.BEDROCK) {
+            tileReady();
+            return;
+        }
+
+        if (buildPhase == 0) {
+            if (shouldDig(buildBase)) {
+                rotateTowards(Vec3d.ofCenter(buildBase));
+                performDig(buildBase);
+            } else {
+                buildPhase = 1;
+                obsidianTicks = 0;
+            }
+            return;
+        }
+
+        rotateTowards(Vec3d.ofCenter(buildBase));
+        obsidianTicks++;
+        if (!passedTicks(obsidianTicks, Math.min(2, (int) obsidianDelay.get()))) {
+            addRenderBox(buildBase, COLOR_OBSIDIAN);
+            return;
+        }
+
+        if (placeObsidian(buildBase)) {
+            addRenderBox(buildBase, COLOR_OBSIDIAN);
+            buildBase = null;
+            buildPhase = 0;
+            digTicks = 0;
+            obsidianTicks = 0;
+            obsidianReadyTicks = 2;
+            buildTicks = 0;
+            digPos = null;
+        } else {
+            addRenderBox(buildBase, COLOR_ERROR);
+            buildBase = null;
+            buildPhase = 0;
+            digTicks = 0;
+            obsidianTicks = 0;
+            obsidianReadyTicks = 0;
+            buildTicks = 0;
+            digPos = null;
+        }
+    }
+
+    private void tileReady() {
+        calcTicks = Integer.MAX_VALUE;
+        calcPosition(placeRange.get(), mc.player.getPos());
+        buildBase = null;
+        buildPhase = 0;
+        digTicks = 0;
+        obsidianTicks = 0;
+        obsidianReadyTicks = 0;
+        buildTicks = 0;
+        digPos = null;
+        endDigTool();
+        lastWallDigTime = 0L;
+    }
+
+    private boolean isBuildReachable(BlockPos pos) {
+        if (mc.player == null) {
+            return false;
+        }
+        return mc.player.getEyePos().distanceTo(Vec3d.ofCenter(pos)) <= 4.3;
+    }
+
+    private void abortBuild() {
+        buildBase = null;
+        buildPhase = 0;
+        digTicks = 0;
+        obsidianTicks = 0;
+        obsidianReadyTicks = 0;
+        buildTicks = 0;
+        digPos = null;
+        endDigTool();
+        lastWallDigPos = null;
+        lastWallDigDir = null;
+    }
+
+    private void rotateTowards(Vec3d vec) {
+        if (mc.player == null) {
+            return;
+        }
+        Vec2f rot = RotationUtils.getRotations(vec);
+        RotationStorage.update(new Rotation(rot.x, rot.y), 40f, 40f, 40f, 40f, 3, 2, false);
+    }
+
+    private void lookAndGround(Vec3d vec) {
+    }
+
+
+    private BlockPos findBuildBase() {
+        if (mc.player == null || mc.world == null) {
+            return null;
+        }
+        if (findAny(Items.OBSIDIAN) == -1) {
+            return null;
+        }
+
+        BlockPos targetPos = target.getBlockPos();
+        List<BlockPos> candidates = new ArrayList<>();
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                for (int dy = -1; dy <= 1; dy++) {
+                    candidates.add(targetPos.add(dx, dy, dz));
+                }
+            }
+        }
+
+        BlockPos best = null;
+        float bestDamage = -1.0f;
+        float bestScore = -1.0f;
+        for (BlockPos bp : candidates) {
+            Block block = mc.world.getBlockState(bp).getBlock();
+            if (block == Blocks.OBSIDIAN || block == Blocks.BEDROCK) {
+                continue;
+            }
+            if (!mc.world.isAir(bp.up()) || !mc.world.isAir(bp.up(2))) {
+                continue;
+            }
+            if (isPositionBlockedByEntity(bp, true)) {
+                continue;
+            }
+            Vec3d crystalPos = new Vec3d(bp.getX() + 0.5, bp.getY() + 1.0, bp.getZ() + 0.5);
+            double distSq = mc.player.getEyePos().squaredDistanceTo(crystalPos);
+            if (distSq > square(placeRange.get()) && distSq > square(placeWallRange.get())) {
+                continue;
+            }
+            if (!canSee(crystalPos) && distSq > square(placeWallRange.get())) {
+                continue;
+            }
+            if (mc.world.getBlockState(bp).isAir() && mc.world.isAir(bp.down())) {
+                continue;
+            }
+            float damage = CrystalDamageCalculator.getExplosionDamage(crystalPos, target, false);
+            if (damage < 4.0f) {
+                continue;
+            }
+            if (best == null || damage > bestDamage
+                    || (damage >= bestDamage - 1.0f && bp.getY() < best.getY())) {
+                bestDamage = damage;
+                best = bp;
+            }
+        }
+
+        if (best == null) {
+            best = findBuildBaseUnderTarget();
+        }
+        return best;
+    }
+
+    private BlockPos findBuildBaseUnderTarget() {
+        int baseX = target.getBlockX();
+        int baseZ = target.getBlockZ();
+        int topY = target.getBlockY() + 1;
+        for (int dy = 0; dy <= 16; dy++) {
+            int y = topY - dy;
+            BlockPos bp = new BlockPos(baseX, y, baseZ);
+            if (y < mc.world.getBottomY()) {
+                break;
+            }
+            BlockState state = mc.world.getBlockState(bp);
+            if (state.isAir() || state.isReplaceable()) {
+                continue;
+            }
+            Block block = state.getBlock();
+            if (block == Blocks.OBSIDIAN || block == Blocks.BEDROCK) {
+                continue;
+            }
+            if (!mc.world.isAir(bp.up()) || !mc.world.isAir(bp.up(2))) {
+                continue;
+            }
+            if (isPositionBlockedByEntity(bp, true)) {
+                continue;
+            }
+            Vec3d crystalPos = new Vec3d(bp.getX() + 0.5, bp.getY() + 1.0, bp.getZ() + 0.5);
+            double distSq = mc.player.getEyePos().squaredDistanceTo(crystalPos);
+            if (distSq > square(placeRange.get()) && distSq > square(placeWallRange.get())) {
+                continue;
+            }
+            float damage = CrystalDamageCalculator.getExplosionDamage(crystalPos, target, false);
+            if (damage < 3.0f) {
+                continue;
+            }
+            return bp;
+        }
+        return null;
+    }
+
+    private boolean shouldDig(BlockPos pos) {
+        if (mc.player == null || mc.world == null) {
+            return false;
+        }
+        BlockState state = mc.world.getBlockState(pos);
+        if (state == null || state.isAir() || state.isReplaceable()) {
+            return false;
+        }
+        float hardness = state.getHardness(mc.world, pos);
+        return hardness >= 0.0f;
+    }
+
+    private void performDig(BlockPos pos) {
+        if (mc.player == null || mc.world == null || mc.interactionManager == null) {
+            return;
+        }
+
+        digPos = pos;
+        if (!shouldDig(pos)) {
+            endDigTool();
+            digTicks = 0;
+            buildPhase = 1;
+            return;
+        }
+
+        digTicks++;
+
+        addRenderBox(pos, COLOR_DIG);
+
+        beginDigTool();
+
+        // настоящий прогрессивный майнинг: сервер накапливает стадии добычи и
+        // ломает блок сам. Кирка держится в руке весь цикл копания - НЕ
+        // пересвапываем каждый тик (это сбрасывало прогресс и копало вечно).
+        // Направление грани вычисляем от глаз к блоку, чтобы не слать
+        // невалидные пакеты (badpackets) на невидимую грань.
+        Direction dir = getDigDirection(pos);
+        mc.interactionManager.attackBlock(pos, dir);
+        mc.interactionManager.updateBlockBreakingProgress(pos, dir);
+
+        if (!shouldDig(pos)) {
+            endDigTool();
+            digPos = null;
+            digTicks = 0;
+            buildPhase = 1;
+        }
+    }
+
+    private void beginDigTool() {
+        int toolSlot = findBestDigToolHotbar();
+        if (toolSlot == -1 || digSwappedSlot != -1) {
+            return;
+        }
+        digPrevSlot = mc.player.getInventory().selectedSlot;
+        if (digMode.is("NORMAL")) {
+            swapToSlot(toolSlot, true);
+        } else {
+            sendPacket(new UpdateSelectedSlotC2SPacket(toolSlot));
+        }
+        digSwappedSlot = toolSlot;
+    }
+
+    private void endDigTool() {
+        if (digSwappedSlot == -1 || digPrevSlot == -1) {
+            digSwappedSlot = -1;
+            digPrevSlot = -1;
+            return;
+        }
+        if (digMode.is("NORMAL")) {
+            swapToSlot(digPrevSlot, true);
+        } else {
+            sendPacket(new UpdateSelectedSlotC2SPacket(digPrevSlot));
+        }
+        digSwappedSlot = -1;
+        digPrevSlot = -1;
+    }
+
+    private Direction getDigDirection(BlockPos pos) {
+        if (mc.player == null || mc.world == null) {
+            return Direction.UP;
+        }
+        Vec3d eye = mc.player.getEyePos();
+        BlockPos playerBlock = mc.player.getBlockPos();
+        Direction best = null;
+        double bestDist = Double.MAX_VALUE;
+        for (Direction dir : Direction.values()) {
+            BlockPos neighbor = pos.offset(dir);
+            if (playerBlock.equals(neighbor)) {
+                double d = eye.distanceTo(neighbor.toCenterPos());
+                if (d < bestDist) {
+                    bestDist = d;
+                    best = dir;
+                }
+            }
+        }
+        if (best != null) {
+            return best;
+        }
+        return Direction.UP;
+    }
+
+    private int findBestDigToolHotbar() {
+        if (mc.player == null) {
+            return -1;
+        }
+        var pick = HotbarUtil.getPickAxeHotBar();
+        if (pick.found()) {
+            return pick.isInHotBar() ? pick.slot() : -1;
+        }
+        var axe = HotbarUtil.getAxeHotBar();
+        if (axe.found()) {
+            return axe.isInHotBar() ? axe.slot() : -1;
+        }
+        int shovel = findInHotbar(Items.DIAMOND_SHOVEL);
+        if (shovel != -1) {
+            return shovel;
+        }
+        return -1;
+    }
+
+    private boolean placeObsidian(BlockPos pos) {
+        if (mc.player == null || mc.world == null || mc.interactionManager == null) {
+            return false;
+        }
+        int obsidianScreen = findObsidianScreenSlot();
+        if (obsidianScreen == -1) {
+            return false;
+        }
+
+        boolean holdingObsidian = mc.player.getMainHandStack().getItem() == Items.OBSIDIAN
+                || mc.player.getOffHandStack().getItem() == Items.OBSIDIAN;
+
+        int prevSlot = mc.player.getInventory().selectedSlot;
+        boolean swappedToOffhand = false;
+
+        if (!holdingObsidian) {
+            int hotbarObsidian = findInHotbar(Items.OBSIDIAN);
+            if (hotbarObsidian != -1) {
+                swapToSlot(hotbarObsidian, true);
+            } else {
+                swappedToOffhand = true;
+                swapSlotToOffhand(obsidianScreen);
+            }
+        }
+
+        Direction side = getPlaceSide(pos);
+        boolean placed = false;
+        if (side != null) {
+            BlockPos neighbor = pos.offset(side);
+            Direction opposite = side.getOpposite();
+            Vec3d hitVec = neighbor.toCenterPos().add(
+                    opposite.getOffsetX() * 0.5,
+                    opposite.getOffsetY() * 0.5,
+                    opposite.getOffsetZ() * 0.5
+            );
+            BlockHitResult result = new BlockHitResult(hitVec, opposite, neighbor, false);
+            Hand hand = swappedToOffhand ? Hand.OFF_HAND : Hand.MAIN_HAND;
+            placed = mc.interactionManager.interactBlock(mc.player, hand, result).isAccepted();
+            if (placed) {
+                mc.player.swingHand(hand);
+            }
+        }
+
+        if (swappedToOffhand) {
+            swapSlotToOffhand(obsidianScreen);
+            sendPacket(new CloseHandledScreenC2SPacket(0));
+        } else {
+            swapToSlot(prevSlot, false);
+        }
+
+        return placed;
+    }
+
+    private int findObsidianScreenSlot() {
+        if (mc.player == null) {
+            return -1;
+        }
+        for (int i = 9; i < 45; i++) {
+            if (mc.player.playerScreenHandler.getSlot(i).getStack().getItem() == Items.OBSIDIAN) {
+                return i;
+            }
+        }
+        for (int i = 0; i < 9; i++) {
+            if (mc.player.getInventory().getStack(i).getItem() == Items.OBSIDIAN) {
+                return i + 36;
+            }
+        }
+        return -1;
+    }
+
+    private void swapSlotToOffhand(int screenSlot) {
+        if (screenSlot >= 36 && screenSlot <= 44) {
+            mc.interactionManager.clickSlot(0, 45, screenSlot - 36, SlotActionType.SWAP, mc.player);
+            return;
+        }
+        mc.interactionManager.clickSlot(0, screenSlot, 0, SlotActionType.SWAP, mc.player);
+        mc.interactionManager.clickSlot(0, 45, 0, SlotActionType.SWAP, mc.player);
+        mc.interactionManager.clickSlot(0, screenSlot, 0, SlotActionType.SWAP, mc.player);
+    }
+
+    private Direction getPlaceSide(BlockPos pos) {
+        if (mc.world == null) {
+            return null;
+        }
+        Direction[] priority = {Direction.DOWN, Direction.UP, Direction.NORTH, Direction.SOUTH, Direction.WEST, Direction.EAST};
+        for (Direction dir : priority) {
+            BlockPos neighbor = pos.offset(dir);
+            BlockState state = mc.world.getBlockState(neighbor);
+            if (!state.isReplaceable() && !state.isLiquid() && state.isSolidBlock(mc.world, neighbor)) {
+                return dir;
+            }
+        }
+        for (Direction dir : priority) {
+            BlockPos neighbor = pos.offset(dir);
+            BlockState state = mc.world.getBlockState(neighbor);
+            if (!state.isReplaceable() && !state.isLiquid()) {
+                return dir;
+            }
+        }
+        return null;
+    }
+
+
+    private void processAwaitingSpawnConfirm() {
+        if (mc.player == null || mc.world == null) {
+            return;
+        }
+
+        Map<BlockPos, CrystalTracker.Attempt> awaiting = crystalTracker.getAwaitingPositions();
+        if (awaiting.isEmpty()) {
+            return;
+        }
+
+        for (Map.Entry<BlockPos, CrystalTracker.Attempt> entry : new ArrayList<>(awaiting.entrySet())) {
+            BlockPos bp = entry.getKey();
+            Box searchBox = new Box(bp.up()).expand(0.9, 0.8, 0.9);
+            List<EndCrystalEntity> nearby = mc.world.getEntitiesByClass(
+                    EndCrystalEntity.class,
+                    searchBox,
+                    entity -> entity != null && entity.isAlive() && entity.squaredDistanceTo(bp.toCenterPos()) < 0.3
+            );
+            if (nearby.isEmpty()) {
+                continue;
+            }
+
+            EndCrystalEntity crystal = nearby.get(0);
+            crystalTracker.confirmSpawn(bp);
+
+            if (passedTicks(breakTicks, (int) breakDelay.get())) {
+                handleSpawn(crystal);
+            }
+        }
+    }
+
+    private void handleSpawn(EndCrystalEntity crystal) {
+        if (mc.player == null || mc.world == null) {
+            return;
+        }
+
+        if (!canAttackCrystal(crystal)) {
+            return;
+        }
+
+        attackCrystal(crystal);
+
+        if (sequential.is("Strong") && passedTicks(placeTicks, (int) placeDelay.get())) {
+            calcPosition(placeRange.get(), mc.player.getPos());
+            if (bestPosition != null) {
+                placeCrystal(bestPosition, false, true);
+            }
+        }
+    }
+
+    private void calcRotations() {
+        if (rotate.is("Off") || shouldPause() || mc.player == null) {
+            rotated = true;
+            rotating = false;
+            return;
+        }
+
+        Vec3d vec = null;
+        if (digPos != null) {
+            vec = Vec3d.ofCenter(digPos);
+        } else if (rotationTarget != null) {
+            vec = rotationTarget;
+        } else if (bestPosition != null) {
+            vec = bestPosition.getPos();
+        } else if (bestCrystal != null) {
+            vec = bestCrystal.getPos();
+        } else if (buildBase != null) {
+            vec = Vec3d.ofCenter(buildBase);
+        }
+
+        if (vec == null) {
+            rotated = true;
+            rotating = false;
+            return;
+        }
+
+        Rotation desired = RotationUtils.fromVec3d(vec);
+        Rotation limited = limitYaw(desired);
+        applyRotation(vec, limited);
+        rotated = !rotate.is("Off") && isRotationAligned(desired);
+        rotating = !rotate.is("Off");
+
+        if (rotationTarget != null && rotationTicks-- < 0) {
+            rotationTarget = null;
+        }
+    }
+
+    private Rotation limitYaw(Rotation desired) {
+        if (!yawStep.isState()) {
+            return desired;
+        }
+
+        float baseYaw = mc.player.getYaw();
+        float deltaYaw = MathHelper.wrapDegrees(desired.getYaw() - baseYaw);
+        float limitedDelta = MathHelper.clamp(deltaYaw, -yawAngle.get(), yawAngle.get());
+        return new Rotation(baseYaw + limitedDelta, desired.getPitch());
+    }
+
+    private boolean isRotationAligned(Rotation targetRotation) {
+        float yaw = mc.player.getYaw();
+        float pitch = mc.player.getPitch();
+
+        float deltaYaw = Math.abs(MathHelper.wrapDegrees(targetRotation.getYaw() - yaw));
+        float deltaPitch = Math.abs(MathHelper.wrapDegrees(targetRotation.getPitch() - pitch));
+        return deltaYaw <= 8.0f && deltaPitch <= 8.0f;
+    }
+
+    private void applyRotation(Vec3d vec, Rotation desired) {
+        if (rotate.is("Off")) {
+            return;
+        }
+
+        float speed;
+        if (rotate.is("Smooth")) {
+            speed = 10f;
+        } else if (rotate.is("Stepped")) {
+            speed = 28f;
+        } else {
+            speed = 40f;
+        }
+
+        Vec2f rot = RotationUtils.getRotations(vec);
+        RotationStorage.update(new Rotation(rot.x, rot.y), speed, speed, 40f, 40f, 3, 2, false);
+    }
+
+    private void attackCrystal(EndCrystalEntity crystal) {
+        if (mc.player == null || mc.world == null || mc.interactionManager == null || crystal == null) {
+            return;
+        }
+
+        if ((crystalTracker.isDead(crystal.getId()) && inhibit.isState()) || shouldPause() || target == null) {
+            return;
+        }
+
+        StatusEffectInstance weakness = mc.player.getStatusEffect(StatusEffects.WEAKNESS);
+        StatusEffectInstance strength = mc.player.getStatusEffect(StatusEffects.STRENGTH);
+
+        int prevSlot = -1;
+        int antiWeaknessHotbar = findAntiWeaknessHotbar();
+        int antiWeaknessInv = findAntiWeaknessInventory();
+
+        if (!antiWeakness.is("NONE")
+                && weakness != null
+                && (strength == null || strength.getAmplifier() < weakness.getAmplifier())) {
+            prevSlot = switchTo(antiWeaknessHotbar, antiWeaknessInv, antiWeakness.getCurrent());
+        }
+
+        if (!rotate.is("Off")) {
+            applyRotation(crystal.getBoundingBox().getCenter(), RotationUtils.fromVec3d(crystal.getBoundingBox().getCenter()));
+        }
+
+        sendPacket(PlayerInteractEntityC2SPacket.attack(crystal, mc.player.isSneaking()));
+        swingHand(false, true);
+
+        breakTicks = 0;
+        crystalTracker.onAttack(crystal, breakFailsafe.isState(), (int) attempts.get());
+        rotationTicks = 10;
+
+        for (Entity entity : mc.world.getEntities()) {
+            if (entity instanceof EndCrystalEntity exCrystal
+                    && exCrystal.squaredDistanceTo(crystal.getX(), crystal.getY(), crystal.getZ()) <= 144.0
+                    && !crystalTracker.isDead(exCrystal.getId())) {
+                crystalTracker.setDead(exCrystal.getId(), System.currentTimeMillis());
+            }
+        }
+
+        if (prevSlot != -1) {
+            if (antiWeakness.is("SILENT")) {
+                mc.player.getInventory().selectedSlot = prevSlot;
+                sendPacket(new UpdateSelectedSlotC2SPacket(prevSlot));
+            } else if (antiWeakness.is("INVENTORY")) {
+                mc.interactionManager.clickSlot(mc.player.currentScreenHandler.syncId, prevSlot,
+                        mc.player.getInventory().selectedSlot, SlotActionType.SWAP, mc.player);
+                sendPacket(new CloseHandledScreenC2SPacket(mc.player.currentScreenHandler.syncId));
+            }
+        }
+    }
+
+    private boolean canAttackCrystal(EndCrystalEntity crystal) {
+        if (crystal == null || target == null || mc.player == null || mc.world == null) {
+            return false;
+        }
+
+        double distanceSq = mc.player.getEyePos().squaredDistanceTo(crystal.getBoundingBox().getCenter());
+        double maxRangeSq = canSee(crystal.getPos()) ? square(explodeRange.get()) : square(explodeWallRange.get());
+        if (distanceSq > maxRangeSq) {
+            return false;
+        }
+
+        if (!crystal.isAlive()) {
+            return false;
+        }
+
+        float damage = CrystalDamageCalculator.getExplosionDamage(crystal.getPos(), target, false);
+        float selfDamage = CrystalDamageCalculator.getExplosionDamage(crystal.getPos(), mc.player, false);
+        boolean overrideDamage = shouldOverrideMaxSelfDmg(damage, selfDamage);
+
+        if (protectFriends.isState()) {
+            for (PlayerEntity player : mc.world.getPlayers()) {
+                if (player == null || player == mc.player || !isFriend(player)) {
+                    continue;
+                }
+                float friendDamage = CrystalDamageCalculator.getExplosionDamage(crystal.getPos(), player, false);
+                if (friendDamage > selfDamage) {
+                    selfDamage = friendDamage;
+                }
+            }
+        }
+
+        return !(selfDamage > maxSelfDamage.get()) || overrideDamage;
+    }
+
+    private int switchTo(int hotbarSlot, int invSlot, String switchMode) {
+        if (mc.player == null || mc.world == null || mc.interactionManager == null) {
+            return -1;
+        }
+
+        int prevSlot = mc.player.getInventory().selectedSlot;
+        switch (switchMode) {
+            case "INVENTORY" -> {
+                if (invSlot != -1) {
+                    prevSlot = invSlot;
+                    mc.interactionManager.clickSlot(mc.player.currentScreenHandler.syncId, invSlot,
+                            mc.player.getInventory().selectedSlot, SlotActionType.SWAP, mc.player);
+                    sendPacket(new CloseHandledScreenC2SPacket(mc.player.currentScreenHandler.syncId));
+                }
+            }
+            case "NORMAL" -> {
+                if (hotbarSlot != -1) {
+                    swapToSlot(hotbarSlot, true);
+                }
+            }
+            case "SILENT" -> {
+                if (hotbarSlot != -1) {
+                    swapToSlot(hotbarSlot, false);
+                }
+            }
+            default -> {
+            }
+        }
+
+        return prevSlot;
+    }
+
+    private void placeCrystal(BlockHitResult bhr, boolean packetRotate, boolean onSpawn) {
+        if (shouldPause() || mc.player == null || bhr == null) {
+            return;
+        }
+
+        int prevSlot = -1;
+        int crystalHotbar = findInHotbar(Items.END_CRYSTAL);
+        int crystalInv = findAny(Items.END_CRYSTAL);
+
+        boolean offhand = mc.player.getOffHandStack().getItem() instanceof EndCrystalItem;
+        boolean holdingCrystal = mc.player.getMainHandStack().getItem() instanceof EndCrystalItem || offhand;
+
+        if (!rotate.is("Off")) {
+            rotationTarget = bhr.getPos();
+            applyRotation(bhr.getPos(), RotationUtils.fromVec3d(bhr.getPos()));
+            if (!packetRotate && !rotated) {
+                return;
+            }
+        }
+
+        if (isPositionBlockedByEntity(bhr.getBlockPos(), false)) {
+            return;
+        }
+
+        if (!autoSwitch.is("NONE") && !holdingCrystal) {
+            prevSlot = switchTo(crystalHotbar, crystalInv, autoSwitch.getCurrent());
+        }
+
+        if (!(mc.player.getMainHandStack().getItem() instanceof EndCrystalItem || offhand || autoSwitch.is("SILENT"))) {
+            return;
+        }
+
+        Hand hand = offhand ? Hand.OFF_HAND : Hand.MAIN_HAND;
+        boolean accepted = mc.interactionManager.interactBlock(mc.player, hand, bhr).isAccepted();
+        if (!accepted) {
+            return;
+        }
+
+        swingHand(offhand, false);
+
+        if (passedTicks(breakTicks, (int) breakDelay.get()) && idPredict.isState()) {
+            predictAttack();
+        }
+
+        placeTicks = 0;
+        rotationTicks = 10;
+
+        if (!bhr.getBlockPos().equals(renderPos)) {
+            renderPos = bhr.getBlockPos();
+        }
+
+        crystalTracker.addAwaitingPos(bhr.getBlockPos(), placeFailsafe.isState());
+        addRenderBox(bhr.getBlockPos(), COLOR_CRYSTAL);
+        postPlaceSwitch(prevSlot);
+
+        if (onSpawn) {
+            placedOnSpawn = true;
+        }
+    }
+
+    private void postPlaceSwitch(int slot) {
+        if (mc.player == null || mc.world == null || mc.interactionManager == null) {
+            return;
+        }
+
+        if (autoSwitch.is("SILENT") && slot != -1) {
+            mc.player.getInventory().selectedSlot = slot;
+            sendPacket(new UpdateSelectedSlotC2SPacket(slot));
+        }
+
+        if (autoSwitch.is("INVENTORY") && slot != -1) {
+            mc.interactionManager.clickSlot(mc.player.currentScreenHandler.syncId, slot,
+                    mc.player.getInventory().selectedSlot, SlotActionType.SWAP, mc.player);
+            sendPacket(new CloseHandledScreenC2SPacket(mc.player.currentScreenHandler.syncId));
+        }
+    }
+
+    private void calcPosition(float range, Vec3d center) {
+        if (mc.player == null || mc.world == null) {
+            return;
+        }
+
+        calcTicks = 0;
+
+        if (target == null) {
+            renderPos = null;
+            bestPosition = null;
+            currentData = null;
+            return;
+        }
+
+        List<PlaceData> list = getPossibleBlocks(target, center, range).stream()
+                .filter(data -> isSafe(data.damage, data.selfDamage, data.overrideDamage))
+                .toList();
+
+        bestPosition = list.isEmpty() ? null : filterPositions(list);
+    }
+
+    private List<PlaceData> getPossibleBlocks(PlayerEntity target, Vec3d center, float range) {
+        List<PlaceData> blocks = new ArrayList<>();
+        BlockPos playerPos = BlockPos.ofFloored(center);
+        int r = (int) Math.ceil(range);
+        double scanRangeSq = square(range + 1.0f);
+
+        for (int x = playerPos.getX() - r; x <= playerPos.getX() + r; x++) {
+            for (int y = playerPos.getY() - r; y <= playerPos.getY() + r; y++) {
+                for (int z = playerPos.getZ() - r; z <= playerPos.getZ() + r; z++) {
+                    BlockPos bp = new BlockPos(x, y, z);
+                    if (bp.toCenterPos().squaredDistanceTo(center) > scanRangeSq) {
+                        continue;
+                    }
+
+                    PlaceData data = getPlaceData(bp, target);
+                    if (data != null) {
+                        blocks.add(data);
+                    }
+                }
+            }
+        }
+
+        return blocks;
+    }
+
+    private List<CrystalData> getPossibleCrystals(PlayerEntity target) {
+        List<CrystalData> crystals = new ArrayList<>();
+        if (mc.player == null || mc.world == null) {
+            return crystals;
+        }
+
+        for (Entity entity : mc.world.getEntities()) {
+            if (!(entity instanceof EndCrystalEntity crystal)) {
+                continue;
+            }
+
+            if (crystalTracker.isBlocked(crystal.getId())) {
+                continue;
+            }
+
+            if (crystalTracker.isDead(crystal.getId()) && inhibit.isState()) {
+                continue;
+            }
+
+            double maxRangeSq = canSee(crystal.getPos()) ? square(explodeRange.get()) : square(explodeWallRange.get());
+            if (mc.player.getEyePos().squaredDistanceTo(crystal.getBoundingBox().getCenter()) > maxRangeSq) {
+                continue;
+            }
+
+            if (!crystal.isAlive()) {
+                continue;
+            }
+
+            float damage = CrystalDamageCalculator.getExplosionDamage(entity.getPos(), target, false);
+            float selfDamage = CrystalDamageCalculator.getExplosionDamage(entity.getPos(), mc.player, false);
+            boolean overrideDamage = shouldOverrideMaxSelfDmg(damage, selfDamage);
+
+            if (protectFriends.isState()) {
+                for (PlayerEntity player : mc.world.getPlayers()) {
+                    if (player == null || player == mc.player || !isFriend(player)) {
+                        continue;
+                    }
+                    float friendDamage = CrystalDamageCalculator.getExplosionDamage(entity.getPos(), player, false);
+                    if (friendDamage > selfDamage) {
+                        selfDamage = friendDamage;
+                    }
+                }
+            }
+
+            if (damage < 1.5f) {
+                continue;
+            }
+            if (selfDamage > maxSelfDamage.get() && !overrideDamage) {
+                continue;
+            }
+
+            crystals.add(new CrystalData(crystal, damage, selfDamage, overrideDamage));
+        }
+
+        return crystals;
+    }
+
+    private void getCrystalToExplode() {
+        if (target == null) {
+            bestCrystal = null;
+            return;
+        }
+
+        if (secondaryCrystal != null) {
+            bestCrystal = canAttackCrystal(secondaryCrystal) ? secondaryCrystal : null;
+            secondaryCrystal = null;
+            return;
+        }
+
+        List<CrystalData> list = getPossibleCrystals(target).stream()
+                .filter(data -> isSafe(data.damage, data.selfDamage, data.overrideDamage))
+                .toList();
+        bestCrystal = list.isEmpty() ? null : filterCrystals(list);
+    }
+
+    private boolean isSafe(float damage, float selfDamage, boolean overrideDamage) {
+        if (mc.player == null || mc.world == null) {
+            return false;
+        }
+
+        if (overrideDamage) {
+            return true;
+        }
+
+        if (selfDamage + 0.5f > mc.player.getHealth() + mc.player.getAbsorptionAmount()) {
+            return false;
+        }
+
+        if (efficiency.isState()) {
+            return damage / Math.max(0.1f, selfDamage) >= efficiencyFactor.get();
+        }
+
+        return true;
+    }
+
+    private BlockHitResult filterPositions(List<PlaceData> clearedList) {
+        PlaceData bestData = null;
+        float bestVal = 0.0f;
+
+        for (PlaceData data : clearedList) {
+            if (!(shouldOverrideMinDmg(data.damage) || data.damage > minDamage.get())) {
+                continue;
+            }
+
+            if (bestData != null
+                    && data.overrideDamage
+                    && target.getAbsorptionAmount() + target.getHealth() < bestData.damage
+                    && bestData.selfDamage < data.selfDamage) {
+                continue;
+            }
+
+            boolean shouldStopOverride = bestData != null
+                    && bestData.overrideDamage
+                    && data.damage > target.getHealth() + target.getAbsorptionAmount()
+                    && data.selfDamage < bestData.selfDamage;
+
+            float safetyComparatorDelta = shouldStopOverride ? 10.0f : 1.0f;
+
+            if (bestData != null
+                    && Math.abs(bestData.damage - data.damage) < safetyComparatorDelta
+                    && Math.abs(bestData.selfDamage - data.selfDamage) > 1.0f) {
+                if (bestData.selfDamage >= data.selfDamage) {
+                    bestData = data;
+                    bestVal = data.damage;
+                }
+            } else if (bestVal < data.damage) {
+                bestData = data;
+                bestVal = data.damage;
+            }
+        }
+
+        if (bestData == null) {
+            return null;
+        }
+
+        renderDamage = bestData.damage;
+        renderSelfDamage = bestData.selfDamage;
+        currentData = bestData;
+        return bestData.bhr;
+    }
+
+    private EndCrystalEntity filterCrystals(List<CrystalData> clearedList) {
+        CrystalData bestData = null;
+        float bestVal = 0.0f;
+
+        for (CrystalData data : clearedList) {
+            if (!(shouldOverrideMinDmg(data.damage) || data.damage > minDamage.get())) {
+                continue;
+            }
+
+            if (bestData != null
+                    && data.overrideDamage
+                    && target.getAbsorptionAmount() + target.getHealth() < bestData.damage
+                    && bestData.selfDamage < data.selfDamage) {
+                continue;
+            }
+
+            boolean shouldStopOverride = bestData != null
+                    && bestData.overrideDamage
+                    && data.damage > target.getHealth() + target.getAbsorptionAmount()
+                    && data.selfDamage < bestData.selfDamage;
+
+            float safetyComparatorDelta = shouldStopOverride ? 10.0f : 1.0f;
+
+            if (bestData != null
+                    && Math.abs(bestData.damage - data.damage) < safetyComparatorDelta
+                    && Math.abs(bestData.selfDamage - data.selfDamage) > 1.0f) {
+                if (bestData.selfDamage >= data.selfDamage) {
+                    bestData = data;
+                    bestVal = data.damage;
+                }
+            } else if (bestVal < data.damage) {
+                bestData = data;
+                bestVal = data.damage;
+            }
+        }
+
+        if (bestData == null) {
+            return null;
+        }
+
+        renderDamage = bestData.damage;
+        renderSelfDamage = bestData.selfDamage;
+        return bestData.crystal;
+    }
+
+    private PlaceData getPlaceData(BlockPos bp, PlayerEntity target) {
+        if (mc.player == null || mc.world == null) {
+            return null;
+        }
+
+        if (crystalTracker.isPositionBlocked(bp, placeFailsafe.isState(), (int) attempts.get())) {
+            return null;
+        }
+
+        if (!predictCrystalSpawn(bp)) {
+            return null;
+        }
+
+        if (target != null && target.getPos().squaredDistanceTo(bp.toCenterPos().add(0.0, 0.5, 0.0)) > 144.0) {
+            return null;
+        }
+
+        Block base = mc.world.getBlockState(bp).getBlock();
+        if (base != Blocks.OBSIDIAN && base != Blocks.BEDROCK) {
+            return null;
+        }
+
+        if (!mc.world.isAir(bp.up())) {
+            return null;
+        }
+
+        if (isPositionBlockedByEntity(bp, true)) {
+            return null;
+        }
+
+        Vec3d crystalVec = new Vec3d(bp.getX() + 0.5, bp.getY() + 1.0, bp.getZ() + 0.5);
+        BlockHitResult interactResult = getInteractResult(bp, crystalVec);
+        if (interactResult == null) {
+            return null;
+        }
+
+        float damage = target == null ? 10.0f : CrystalDamageCalculator.getExplosionDamage(crystalVec, target, false);
+        if (damage < 1.5f) {
+            return null;
+        }
+
+        float selfDamage = CrystalDamageCalculator.getExplosionDamage(crystalVec, mc.player, false);
+        boolean overrideDamage = shouldOverrideMaxSelfDmg(damage, selfDamage);
+
+        if (protectFriends.isState()) {
+            for (PlayerEntity player : mc.world.getPlayers()) {
+                if (player == null || player == mc.player || !isFriend(player)) {
+                    continue;
+                }
+                float friendDamage = CrystalDamageCalculator.getExplosionDamage(crystalVec, player, false);
+                if (friendDamage > selfDamage) {
+                    selfDamage = friendDamage;
+                }
+            }
+        }
+
+        if (selfDamage > maxSelfDamage.get() && !overrideDamage) {
+            return null;
+        }
+
+        return new PlaceData(interactResult, damage, selfDamage, overrideDamage);
+    }
+
+    private boolean predictCrystalSpawn(BlockPos bp) {
+        if (mc.player == null) {
+            return false;
+        }
+        Vec3d predictedPos = bp.toCenterPos().add(0.0, 1.5, 0.0);
+        Vec3d predictedEyes = mc.player.getPos().add(0.0, mc.player.getEyeHeight(mc.player.getPose()), 0.0);
+        double distanceSq = predictedEyes.squaredDistanceTo(predictedPos);
+
+        if (canSee(predictedPos)) {
+            return distanceSq <= square(explodeRange.get());
+        }
+
+        return distanceSq <= square(explodeWallRange.get());
+    }
+
+    private BlockHitResult getInteractResult(BlockPos bp, Vec3d crystalVec) {
+        return interact.is("Strict") ? getStrictInteract(bp) : getDefaultInteract(crystalVec, bp);
+    }
+
+    private boolean isPositionBlockedByEntity(BlockPos base, boolean calcPhase) {
+        if (mc.player == null || mc.world == null) {
+            return false;
+        }
+
+        Box box = new Box(base.up()).expand(0.0, 1.0, 0.0);
+        for (Entity entity : mc.world.getEntities()) {
+            if (entity == null || !entity.isAlive() || !entity.getBoundingBox().intersects(box)) {
+                continue;
+            }
+
+            if (entity instanceof ExperienceOrbEntity) {
+                continue;
+            }
+
+            if (entity instanceof EndCrystalEntity crystal) {
+                if (crystalTracker.isDead(crystal.getId())) {
+                    continue;
+                }
+
+                if (crystalTracker.isBlocked(crystal.getId())) {
+                    return true;
+                }
+
+                if (calcPhase) {
+                    if (canAttackCrystal(crystal)) {
+                        continue;
+                    }
+                } else if (crystal.getPos().squaredDistanceTo(box.getCenter()) > 0.3) {
+                    secondaryCrystal = crystal;
+                }
+            }
+
+            return true;
+        }
+        return false;
+    }
+
+    private boolean shouldOverrideMaxSelfDmg(float damage, float selfDamage) {
+        if (!overrideSelfDamage.isState() || target == null || mc.player == null || mc.world == null) {
+            return false;
+        }
+
+        boolean targetSafe = target.getOffHandStack().isOf(Items.TOTEM_OF_UNDYING) || target.getMainHandStack().isOf(Items.TOTEM_OF_UNDYING);
+        boolean playerSafe = mc.player.getOffHandStack().isOf(Items.TOTEM_OF_UNDYING) || mc.player.getMainHandStack().isOf(Items.TOTEM_OF_UNDYING);
+
+        float targetHp = target.getHealth() + target.getAbsorptionAmount();
+        float playerHp = mc.player.getHealth() + mc.player.getAbsorptionAmount();
+
+        boolean canPop = damage > targetHp && targetSafe;
+        boolean canKill = damage > targetHp && !targetSafe;
+        boolean canPopSelf = selfDamage > playerHp && playerSafe;
+        boolean canKillSelf = selfDamage > playerHp && !playerSafe;
+
+        if (canPopSelf && canKill && sacrificeTotem.isState()) {
+            return true;
+        }
+
+        return selfDamage > maxSelfDamage.get() && (canPop || canKill) && !canKillSelf && !canPopSelf;
+    }
+
+    private boolean shouldOverrideMinDmg(float damage) {
+        if (target == null) {
+            return false;
+        }
+
+        if (facePlaceButton.getKey() != -1 && KeyBoardUtils.isBindHeld(facePlaceButton.getKey())) {
+            return true;
+        }
+
+        if ((target.getHealth() + target.getAbsorptionAmount()) - damage < 0.0f) {
+            return true;
+        }
+
+        if (armorBreaker.isState()) {
+            for (ItemStack armor : target.getArmorItems()) {
+                if (armor == null || armor.isEmpty() || armor.getItem() == Items.AIR || !armor.isDamageable()) {
+                    continue;
+                }
+                float durabilityPercent = ((armor.getMaxDamage() - armor.getDamage()) / (float) armor.getMaxDamage()) * 100.0f;
+                if (durabilityPercent < armorScale.get()) {
+                    return true;
+                }
+            }
+        }
+
+        return target.getHealth() + target.getAbsorptionAmount() <= facePlaceHp.get();
+    }
+
+    private BlockHitResult getDefaultInteract(Vec3d crystalVector, BlockPos bp) {
+        if (mc.player == null || mc.world == null) {
+            return null;
+        }
+
+        if (mc.player.getEyePos().squaredDistanceTo(crystalVector) > square(placeRange.get())) {
+            return null;
+        }
+
+        HitResult wallCheck = mc.world.raycast(new RaycastContext(
+                mc.player.getEyePos(),
+                crystalVector,
+                RaycastContext.ShapeType.COLLIDER,
+                RaycastContext.FluidHandling.NONE,
+                mc.player
+        ));
+
+        if (wallCheck instanceof BlockHitResult blockHit
+                && blockHit.getType() == HitResult.Type.BLOCK
+                && !blockHit.getBlockPos().equals(bp)
+                && mc.player.getEyePos().squaredDistanceTo(crystalVector) > square(placeWallRange.get())) {
+            return null;
+        }
+
+        Direction side = mc.world.isInBuildLimit(bp.up()) ? Direction.UP : Direction.DOWN;
+        return new BlockHitResult(crystalVector, side, bp, false);
+    }
+
+    private BlockHitResult getStrictInteract(BlockPos bp) {
+        if (mc.player == null || mc.world == null) {
+            return null;
+        }
+
+        float bestDistance = Float.MAX_VALUE;
+        Direction bestDirection = null;
+        Vec3d bestVec = null;
+
+        float upPoint = strictCenter.isState() ? (float) bp.toCenterPos().getY() : bp.up().getY();
+        if (mc.player.getEyePos().getY() > upPoint) {
+            bestDirection = Direction.UP;
+        } else if (mc.player.getEyePos().getY() < bp.getY() && mc.world.isAir(bp.down())) {
+            bestDirection = Direction.DOWN;
+        }
+
+        List<Direction> directions = new ArrayList<>(List.of(Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST));
+        if (bestDirection != null) {
+            directions.add(bestDirection);
+        }
+
+        for (Direction dir : directions) {
+            Vec3d vec = bp.toCenterPos().add(Vec3d.of(dir.getVector()).multiply(0.5));
+            if (!mc.world.getBlockState(bp.offset(dir)).isReplaceable()) {
+                continue;
+            }
+
+            double distanceSq = mc.player.getEyePos().squaredDistanceTo(vec);
+            double maxDistanceSq = canSee(vec) ? square(placeRange.get()) : square(placeWallRange.get());
+            if (distanceSq > maxDistanceSq) {
+                continue;
+            }
+
+            if (distanceSq < bestDistance) {
+                bestDistance = (float) distanceSq;
+                bestDirection = dir;
+                bestVec = vec;
+            }
+        }
+
+        if (bestDirection == null || bestVec == null) {
+            return null;
+        }
+
+        return new BlockHitResult(bestVec, bestDirection, bp, false);
+    }
+
+    private void swingHand(boolean offHand, boolean attack) {
+        Hand hand = offHand ? Hand.OFF_HAND : Hand.MAIN_HAND;
+        switch (swingMode.getCurrent()) {
+            case "Both" -> mc.player.swingHand(hand);
+            case "Break" -> {
+                if (attack) {
+                    mc.player.swingHand(Hand.MAIN_HAND);
+                } else {
+                    sendPacket(new HandSwingC2SPacket(Hand.MAIN_HAND));
+                }
+            }
+            case "Place" -> {
+                if (!attack) {
+                    mc.player.swingHand(hand);
+                } else {
+                    sendPacket(new HandSwingC2SPacket(hand));
+                }
+            }
+            case "ServerSide" -> sendPacket(new HandSwingC2SPacket(hand));
+            default -> mc.player.swingHand(hand);
+        }
+    }
+
+    private void predictAttack() {
+        int attacks = (int) idAttacks.get();
+        for (int i = 1; i <= attacks; i++) {
+            int id = (int) (currentId + i);
+            Entity entity = mc.world == null ? null : mc.world.getEntityById(id);
+            if (entity == null || entity instanceof EndCrystalEntity) {
+                PlayerInteractEntityC2SPacket attackPacket = PlayerInteractEntityC2SPacket.attack(mc.player, mc.player.isSneaking());
+                changeId(attackPacket, id);
+                sendPacket(attackPacket);
+                sendPacket(new HandSwingC2SPacket(Hand.MAIN_HAND));
+            }
+        }
+    }
+
+    private static void changeId(PlayerInteractEntityC2SPacket packet, int id) {
+        try {
+            Field field;
+            try {
+                field = PlayerInteractEntityC2SPacket.class.getDeclaredField("entityId");
+            } catch (NoSuchFieldException ex) {
+                field = PlayerInteractEntityC2SPacket.class.getDeclaredField("field_12870");
+            }
+            field.setAccessible(true);
+            field.setInt(packet, id);
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void processSpawnPacket(int id) {
+        if (id > currentId) {
+            currentId = id;
+        }
+    }
+
+    private void confirmAwaitingBySpawn(int entityId, Vec3d spawnPos) {
+        if (spawnPos == null) {
+            return;
+        }
+
+        Map<BlockPos, CrystalTracker.Attempt> awaiting = crystalTracker.getAwaitingPositions();
+        if (awaiting.isEmpty()) {
+            return;
+        }
+
+        for (Map.Entry<BlockPos, CrystalTracker.Attempt> entry : new ArrayList<>(awaiting.entrySet())) {
+            BlockPos bp = entry.getKey();
+            if (spawnPos.squaredDistanceTo(bp.toCenterPos()) > 0.36) {
+                continue;
+            }
+
+            crystalTracker.confirmSpawn(bp);
+
+            if (passedTicks(breakTicks, (int) breakDelay.get())) {
+                Entity entity = mc.world == null ? null : mc.world.getEntityById(entityId);
+                if (entity instanceof EndCrystalEntity crystal) {
+                    handleSpawn(crystal);
+                } else {
+                    attackSpawnById(entityId);
+                }
+            }
+            break;
+        }
+    }
+
+    private void attackSpawnById(int entityId) {
+        if (mc.player == null || mc.world == null || target == null || shouldPause()) {
+            return;
+        }
+
+        PlayerInteractEntityC2SPacket attackPacket = PlayerInteractEntityC2SPacket.attack(mc.player, mc.player.isSneaking());
+        changeId(attackPacket, entityId);
+        sendPacket(attackPacket);
+        swingHand(false, true);
+        crystalTracker.setDead(entityId, System.currentTimeMillis());
+        breakTicks = 0;
+        rotationTicks = 10;
+    }
+
+    private Vec3d resolveEntitySpawnPos(EntitySpawnS2CPacket packet) {
+        Double x = tryReadCoordinate(packet, "getX", "x");
+        Double y = tryReadCoordinate(packet, "getY", "y");
+        Double z = tryReadCoordinate(packet, "getZ", "z");
+        if (x != null && y != null && z != null) {
+            return new Vec3d(x, y, z);
+        }
+
+        try {
+            Object value = packet.getClass().getMethod("getPos").invoke(packet);
+            if (value instanceof Vec3d vec) {
+                return vec;
+            }
+        } catch (ReflectiveOperationException ignored) {
+        }
+
+        return null;
+    }
+
+    private Vec3d resolveExplosionPos(ExplosionS2CPacket packet) {
+        Vec3d center = tryReadCenter(packet);
+        if (center != null) {
+            return center;
+        }
+
+        Double x = tryReadCoordinate(packet, "getX", "x");
+        Double y = tryReadCoordinate(packet, "getY", "y");
+        Double z = tryReadCoordinate(packet, "getZ", "z");
+        if (x != null && y != null && z != null) {
+            return new Vec3d(x, y, z);
+        }
+
+        if (mc.player != null) {
+            return mc.player.getPos();
+        }
+
+        return Vec3d.ZERO;
+    }
+
+    private Vec3d tryReadCenter(ExplosionS2CPacket packet) {
+        try {
+            Object value = packet.getClass().getMethod("center").invoke(packet);
+            if (value instanceof Vec3d vec) {
+                return vec;
+            }
+        } catch (ReflectiveOperationException ignored) {
+        }
+
+        try {
+            Object value = packet.getClass().getMethod("getCenter").invoke(packet);
+            if (value instanceof Vec3d vec) {
+                return vec;
+            }
+        } catch (ReflectiveOperationException ignored) {
+        }
+
+        return null;
+    }
+
+    private Double tryReadCoordinate(Object packet, String methodName, String fieldName) {
+        try {
+            Object value = packet.getClass().getMethod(methodName).invoke(packet);
+            if (value instanceof Number number) {
+                return number.doubleValue();
+            }
+        } catch (ReflectiveOperationException ignored) {
+        }
+
+        try {
+            Field field = packet.getClass().getDeclaredField(fieldName);
+            field.setAccessible(true);
+            Object value = field.get(packet);
+            if (value instanceof Number number) {
+                return number.doubleValue();
+            }
+        } catch (ReflectiveOperationException ignored) {
+        }
+
+        return null;
+    }
+
+    private float getPing() {
+        if (mc.getNetworkHandler() == null || mc.player == null) {
+            return 0f;
+        }
+        PlayerListEntry entry = mc.getNetworkHandler().getPlayerListEntry(mc.player.getUuid());
+        return entry == null ? 0f : entry.getLatency();
+    }
+
+    private boolean shouldPause() {
+        if (mc.player == null || mc.world == null || mc.interactionManager == null) {
+            return true;
+        }
+
+        boolean offhand = mc.player.getOffHandStack().getItem() instanceof EndCrystalItem;
+        boolean mainHand = mc.player.getMainHandStack().getItem() instanceof EndCrystalItem;
+
+        if (mc.interactionManager.isBreakingBlock() && !offhand && mining.isState()) {
+            return true;
+        }
+
+        if (autoSwitch.is("NONE") && !offhand && !mainHand) {
+            return true;
+        }
+
+        if ((autoSwitch.is("SILENT") || autoSwitch.is("NORMAL")) && findInHotbar(Items.END_CRYSTAL) == -1 && !offhand) {
+            return true;
+        }
+
+        if (autoSwitch.is("INVENTORY") && findAny(Items.END_CRYSTAL) == -1 && !offhand) {
+            return true;
+        }
+
+        if (mc.player.isUsingItem() && eating.isState()) {
+            return true;
+        }
+
+        if (inventoryPause.isState() && mc.currentScreen != null) {
+            return true;
+        }
+
+        if (mc.player.getHealth() + mc.player.getAbsorptionAmount() < pauseHP.get()) {
+            return true;
+        }
+
+        return false;
+    }
+
+    private PlayerEntity findTarget(float range, String logic) {
+        if (mc.player == null || mc.world == null) {
+            return null;
+        }
+
+        List<PlayerEntity> candidates = new ArrayList<>();
+        for (PlayerEntity player : mc.world.getPlayers()) {
+            if (player == null || player == mc.player || !player.isAlive() || player.isSpectator()) {
+                continue;
+            }
+
+            if (AntiBot.checkBot(player)) {
+                continue;
+            }
+
+            if (isFriend(player)) {
+                continue;
+            }
+
+            if (mc.player.squaredDistanceTo(player) > square(range)) {
+                continue;
+            }
+
+            candidates.add(player);
+        }
+
+        if (candidates.isEmpty()) {
+            return null;
+        }
+
+        if ("Health".equalsIgnoreCase(logic)) {
+            return candidates.stream().min(Comparator.comparingDouble(p -> p.getHealth() + p.getAbsorptionAmount())).orElse(null);
+        }
+
+        return candidates.stream().min(Comparator.comparingDouble(mc.player::squaredDistanceTo)).orElse(null);
+    }
+
+    private int findInHotbar(Item item) {
+        if (mc.player == null) {
+            return -1;
+        }
+        for (int i = 0; i < 9; i++) {
+            if (mc.player.getInventory().getStack(i).getItem() == item) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private int findAny(Item item) {
+        if (mc.player == null) {
+            return -1;
+        }
+        for (int i = 0; i < 36; i++) {
+            if (mc.player.getInventory().getStack(i).getItem() == item) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private int findAntiWeaknessHotbar() {
+        if (mc.player == null) {
+            return -1;
+        }
+        for (int i = 0; i < 9; i++) {
+            Item item = mc.player.getInventory().getStack(i).getItem();
+            if (item instanceof SwordItem || item instanceof PickaxeItem || item instanceof AxeItem || item instanceof ShovelItem) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private int findAntiWeaknessInventory() {
+        if (mc.player == null) {
+            return -1;
+        }
+        for (int i = 9; i < 36; i++) {
+            Item item = mc.player.getInventory().getStack(i).getItem();
+            if (item instanceof SwordItem || item instanceof PickaxeItem || item instanceof AxeItem || item instanceof ShovelItem) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private void swapToSlot(int slot, boolean syncToServer) {
+        if (slot < 0 || mc.player == null) {
+            return;
+        }
+        mc.player.getInventory().selectedSlot = slot;
+        if (syncToServer) {
+            sendPacket(new UpdateSelectedSlotC2SPacket(slot));
+        }
+    }
+
+    private void sendPacket(Packet<?> packet) {
+        if (mc.getNetworkHandler() != null && packet != null) {
+            mc.getNetworkHandler().sendPacket(packet);
+        }
+    }
+
+    private boolean passedTicks(int counter, int delay) {
+        return counter >= Math.max(0, delay);
+    }
+
+    private void cleanupRenderPositions() {
+        long now = System.currentTimeMillis();
+        long holdMs = (long) renderHoldMs.get();
+        renderPositions.entrySet().removeIf(entry -> now - entry.getValue().time() > holdMs);
+    }
+
+    private void addRenderBox(BlockPos pos, int color) {
+        if (pos == null) {
+            return;
+        }
+        renderPositions.put(pos.toImmutable(), new RenderBox(System.currentTimeMillis(), color));
+    }
+
+    private double square(double value) {
+        return value * value;
+    }
+
+    private boolean render(String key) {
+        return renderSettings.is(key);
+    }
+
+    private boolean isFriend(PlayerEntity player) {
+        return Neural.INSTANCE.friendStorage != null
+                && Neural.INSTANCE.friendStorage.isFriend(player.getName().getString());
+    }
+
+    private boolean canSee(Vec3d end) {
+        if (mc.player == null || mc.world == null) {
+            return false;
+        }
+        Vec3d start = mc.player.getEyePos();
+        BlockHitResult hit = mc.world.raycast(new RaycastContext(start, end,
+                RaycastContext.ShapeType.COLLIDER, RaycastContext.FluidHandling.NONE, mc.player));
+        return hit.getType() == HitResult.Type.MISS || hit.getPos().squaredDistanceTo(end) < 0.01;
+    }
+
+    private float animate(AnimationUtils animation, boolean state) {
+        if (!render("Animate")) {
+            animation.setValue(state ? 1f : 0f);
+            return state ? 1f : 0f;
+        }
+        animation.update(state ? 1f : 0f);
+        return animation.getValue();
+    }
+
+    private void addFilledBox(BufferBuilder buffer, Matrix4f matrix, BlockPos pos, float r, float g, float b, float a) {
+        float minX = pos.getX();
+        float minY = pos.getY();
+        float minZ = pos.getZ();
+        float maxX = minX + RENDER_BOX_SIZE;
+        float maxY = minY + RENDER_BOX_SIZE;
+        float maxZ = minZ + RENDER_BOX_SIZE;
+
+        buffer.vertex(matrix, minX, minY, minZ).color(r, g, b, a);
+        buffer.vertex(matrix, maxX, minY, minZ).color(r, g, b, a);
+        buffer.vertex(matrix, maxX, minY, maxZ).color(r, g, b, a);
+        buffer.vertex(matrix, minX, minY, maxZ).color(r, g, b, a);
+
+        buffer.vertex(matrix, minX, maxY, minZ).color(r, g, b, a);
+        buffer.vertex(matrix, minX, maxY, maxZ).color(r, g, b, a);
+        buffer.vertex(matrix, maxX, maxY, maxZ).color(r, g, b, a);
+        buffer.vertex(matrix, maxX, maxY, minZ).color(r, g, b, a);
+
+        buffer.vertex(matrix, minX, minY, minZ).color(r, g, b, a);
+        buffer.vertex(matrix, minX, maxY, minZ).color(r, g, b, a);
+        buffer.vertex(matrix, maxX, maxY, minZ).color(r, g, b, a);
+        buffer.vertex(matrix, maxX, minY, minZ).color(r, g, b, a);
+
+        buffer.vertex(matrix, minX, minY, maxZ).color(r, g, b, a);
+        buffer.vertex(matrix, maxX, minY, maxZ).color(r, g, b, a);
+        buffer.vertex(matrix, maxX, maxY, maxZ).color(r, g, b, a);
+        buffer.vertex(matrix, minX, maxY, maxZ).color(r, g, b, a);
+
+        buffer.vertex(matrix, minX, minY, minZ).color(r, g, b, a);
+        buffer.vertex(matrix, minX, minY, maxZ).color(r, g, b, a);
+        buffer.vertex(matrix, minX, maxY, maxZ).color(r, g, b, a);
+        buffer.vertex(matrix, minX, maxY, minZ).color(r, g, b, a);
+
+        buffer.vertex(matrix, maxX, minY, minZ).color(r, g, b, a);
+        buffer.vertex(matrix, maxX, maxY, minZ).color(r, g, b, a);
+        buffer.vertex(matrix, maxX, maxY, maxZ).color(r, g, b, a);
+        buffer.vertex(matrix, maxX, minY, maxZ).color(r, g, b, a);
+    }
+
+    private void addOutlinedBox(BufferBuilder buffer, Matrix4f matrix, BlockPos pos, float r, float g, float b, float a) {
+        float minX = pos.getX();
+        float minY = pos.getY();
+        float minZ = pos.getZ();
+        float maxX = minX + RENDER_BOX_SIZE;
+        float maxY = minY + RENDER_BOX_SIZE;
+        float maxZ = minZ + RENDER_BOX_SIZE;
+
+        buffer.vertex(matrix, minX, minY, minZ).color(r, g, b, a);
+        buffer.vertex(matrix, maxX, minY, minZ).color(r, g, b, a);
+        buffer.vertex(matrix, maxX, minY, minZ).color(r, g, b, a);
+        buffer.vertex(matrix, maxX, minY, maxZ).color(r, g, b, a);
+        buffer.vertex(matrix, maxX, minY, maxZ).color(r, g, b, a);
+        buffer.vertex(matrix, minX, minY, maxZ).color(r, g, b, a);
+        buffer.vertex(matrix, minX, minY, maxZ).color(r, g, b, a);
+        buffer.vertex(matrix, minX, minY, minZ).color(r, g, b, a);
+
+        buffer.vertex(matrix, minX, maxY, minZ).color(r, g, b, a);
+        buffer.vertex(matrix, maxX, maxY, minZ).color(r, g, b, a);
+        buffer.vertex(matrix, maxX, maxY, minZ).color(r, g, b, a);
+        buffer.vertex(matrix, maxX, maxY, maxZ).color(r, g, b, a);
+        buffer.vertex(matrix, maxX, maxY, maxZ).color(r, g, b, a);
+        buffer.vertex(matrix, minX, maxY, maxZ).color(r, g, b, a);
+        buffer.vertex(matrix, minX, maxY, maxZ).color(r, g, b, a);
+        buffer.vertex(matrix, minX, maxY, minZ).color(r, g, b, a);
+
+        buffer.vertex(matrix, minX, minY, minZ).color(r, g, b, a);
+        buffer.vertex(matrix, minX, maxY, minZ).color(r, g, b, a);
+        buffer.vertex(matrix, maxX, minY, minZ).color(r, g, b, a);
+        buffer.vertex(matrix, maxX, maxY, minZ).color(r, g, b, a);
+        buffer.vertex(matrix, maxX, minY, maxZ).color(r, g, b, a);
+        buffer.vertex(matrix, maxX, maxY, maxZ).color(r, g, b, a);
+        buffer.vertex(matrix, minX, minY, maxZ).color(r, g, b, a);
+        buffer.vertex(matrix, minX, maxY, maxZ).color(r, g, b, a);
+    }
+
+    private record PlaceData(BlockHitResult bhr, float damage, float selfDamage, boolean overrideDamage) {
+    }
+
+    private record CrystalData(EndCrystalEntity crystal, float damage, float selfDamage, boolean overrideDamage) {
+    }
+
+    private record RenderBox(long time, int color) {
+    }
+
+    private static final class CrystalTracker {
+        private final Map<Integer, Long> deadCrystals = new ConcurrentHashMap<>();
+        private final Map<Integer, Integer> attackAttempts = new ConcurrentHashMap<>();
+        private final Map<Integer, Long> blockedCrystals = new ConcurrentHashMap<>();
+        private final Map<BlockPos, Attempt> awaitingPositions = new ConcurrentHashMap<>();
+
+        void reset() {
+            deadCrystals.clear();
+            attackAttempts.clear();
+            blockedCrystals.clear();
+            awaitingPositions.clear();
+        }
+
+        void update() {
+            long now = System.currentTimeMillis();
+            deadCrystals.entrySet().removeIf(entry -> now - entry.getValue() > 1800L);
+            blockedCrystals.entrySet().removeIf(entry -> now - entry.getValue() > 1800L);
+            awaitingPositions.entrySet().removeIf(entry -> now - entry.getValue().time() > 2500L);
+        }
+
+        void onAttack(EndCrystalEntity crystal, boolean breakFailsafeEnabled, int maxAttempts) {
+            if (crystal == null) {
+                return;
+            }
+
+            int id = crystal.getId();
+            setDead(id, System.currentTimeMillis());
+
+            if (breakFailsafeEnabled) {
+                int attempts = attackAttempts.getOrDefault(id, 0) + 1;
+                attackAttempts.put(id, attempts);
+                if (attempts >= Math.max(1, maxAttempts)) {
+                    blockedCrystals.put(id, System.currentTimeMillis());
+                }
+            }
+        }
+
+        boolean isDead(int id) {
+            return deadCrystals.containsKey(id);
+        }
+
+        void setDead(int id, long time) {
+            deadCrystals.put(id, time);
+        }
+
+        boolean isBlocked(int id) {
+            return blockedCrystals.containsKey(id);
+        }
+
+        void addAwaitingPos(BlockPos pos, boolean placeFailsafeEnabled) {
+            Attempt previous = awaitingPositions.get(pos);
+            int nextAttempt = previous == null ? 1 : previous.attempts() + 1;
+            awaitingPositions.put(pos.toImmutable(), new Attempt(System.currentTimeMillis(), placeFailsafeEnabled ? nextAttempt : 1));
+        }
+
+        boolean isPositionBlocked(BlockPos pos, boolean placeFailsafeEnabled, int maxAttempts) {
+            if (!placeFailsafeEnabled) {
+                return false;
+            }
+            Attempt attempt = awaitingPositions.get(pos);
+            return attempt != null && attempt.attempts() >= Math.max(1, maxAttempts);
+        }
+
+        void confirmSpawn(BlockPos pos) {
+            awaitingPositions.remove(pos);
+        }
+
+        Map<BlockPos, Attempt> getAwaitingPositions() {
+            return awaitingPositions;
+        }
+
+        record Attempt(long time, int attempts) {
+        }
+    }
+}

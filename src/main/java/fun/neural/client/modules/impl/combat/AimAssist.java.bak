@@ -1,0 +1,816 @@
+package fun.neural.client.modules.impl.combat;
+
+import net.minecraft.client.gui.screen.ingame.HandledScreen;
+import net.minecraft.entity.Entity;
+import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.decoration.ArmorStandEntity;
+import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.item.CrossbowItem;
+import net.minecraft.item.HoeItem;
+import net.minecraft.item.Item;
+import net.minecraft.item.ItemStack;
+import net.minecraft.item.Items;
+import net.minecraft.item.MaceItem;
+import net.minecraft.item.PickaxeItem;
+import net.minecraft.item.ShovelItem;
+import net.minecraft.item.SwordItem;
+import net.minecraft.item.AxeItem;
+import net.minecraft.item.consume.UseAction;
+import net.minecraft.registry.RegistryKey;
+import net.minecraft.util.math.Box;
+import net.minecraft.util.math.MathHelper;
+import net.minecraft.util.math.Vec3d;
+import net.minecraft.world.RaycastContext;
+import net.minecraft.world.World;
+
+import fun.neural.Neural;
+import fun.neural.api.events.EventLink;
+import fun.neural.api.events.implement.EventAttackEntity;
+import fun.neural.api.events.implement.EventUpdate;
+import fun.neural.client.modules.Module;
+import fun.neural.client.modules.settings.Setting;
+import fun.neural.client.modules.settings.implement.BooleanSetting;
+import fun.neural.client.modules.settings.implement.FloatSetting;
+import fun.neural.client.modules.settings.implement.ListSetting;
+import fun.neural.client.modules.settings.implement.ModeSetting;
+
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ThreadLocalRandom;
+
+public class AimAssist extends Module {
+
+    public static AimAssist INSTANCE = new AimAssist();
+
+    private static final String PRIORITY_DISTANCE = "Дистанция";
+    private static final String PRIORITY_HEALTH = "Здоровье";
+    private static final String PRIORITY_ANGLE = "Угол";
+
+    private final List<AimMode> aimModes = List.of(new FreeAim(), new LegitAim());
+    private final List<String> aimModeNames = aimModes.stream().map(AimMode::getText).toList();
+
+    private final ModeSetting rotation = new ModeSetting("Ротация", aimModeNames.get(0), aimModeNames.toArray(new String[0]));
+    private final ModeSetting prioritet = new ModeSetting("Приоритет", PRIORITY_ANGLE, PRIORITY_DISTANCE, PRIORITY_HEALTH, PRIORITY_ANGLE);
+    private final FloatSetting range = new FloatSetting("Дистанция", 4.5f, 1f, 6f, 0.1f);
+    private final FloatSetting fovSetting = new FloatSetting("Фов", 360f, 20f, 360f, 1f);
+    private final FloatSetting uderzhanieAfterUdara = new FloatSetting("Удержание после удара", 5f, 0f, 30f, 1f);
+    private final BooleanSetting onlyLasthit = new BooleanSetting("Только ластхит", false);
+    private final BooleanSetting navodkaCArbaletom = new BooleanSetting("Наводка c арбалетом", false);
+    private final FloatSetting rangeArbaleta = new FloatSetting("Дистанция арбалета", 20f, 1f, 100f, 0.5f);
+
+    private final ListSetting targets = new ListSetting("Цели",
+            new BooleanSetting("Только игроки", true),
+            new BooleanSetting("Невидимые", false),
+            new BooleanSetting("Только в броне", false),
+            new BooleanSetting("Только в незеритовой", false),
+            new BooleanSetting("Голые", false)
+    );
+
+    private final ListSetting usloviya = new ListSetting("Условия",
+            new BooleanSetting("Только с оружием", true),
+            new BooleanSetting("Не целить в инвентаре", true),
+            new BooleanSetting("Не целить когда ем", true),
+            new BooleanSetting("Проверка стен", true),
+            new BooleanSetting("Только по X", true),
+            new BooleanSetting("Выкл. при смене мира", false)
+    );
+
+    private final RotationUtil rotationUtil = new RotationUtil();
+    private final Map<UUID, AimSample> aimSampleMap = new ConcurrentHashMap<>();
+
+    private LivingEntity entity;
+    private long time;
+    private long time2;
+    private LivingEntity entity2;
+    private double value235;
+    private double value236;
+    private double value237;
+    private RegistryKey<World> registryKey;
+    private Vec3d vec3d;
+    private Vec3d vec3d2;
+
+    public AimAssist() {
+        super("AimAssist", "Аим ассист", ModuleCategory.COMBAT);
+        addSettings(rotation);
+
+        for (AimMode aimMode : aimModes) {
+            addSettings(aimMode.getList().toArray(new Setting[0]));
+            for (Setting setting : aimMode.getList()) {
+                if (setting instanceof FloatSetting floatSetting) {
+                    floatSetting.visible(() -> rotation.is(aimMode.getText()));
+                }
+            }
+        }
+
+        addSettings(
+                prioritet,
+                range,
+                fovSetting,
+                uderzhanieAfterUdara,
+                onlyLasthit,
+                navodkaCArbaletom,
+                rangeArbaleta.visible(navodkaCArbaletom::isState),
+                targets,
+                usloviya
+        );
+    }
+
+    private boolean isCondition(String text) {
+        return usloviya.is(text);
+    }
+
+    private boolean isTargetFlag(String text) {
+        return targets.is(text);
+    }
+
+    private boolean checkCrossbow() {
+        return mc.player != null && isCrossbow(mc.player.getMainHandStack());
+    }
+
+    private boolean checkEating() {
+        if (mc.player != null && mc.player.isUsingItem()) {
+            UseAction useAction = mc.player.getActiveItem().getUseAction();
+            return useAction == UseAction.EAT || useAction == UseAction.DRINK;
+        }
+        return false;
+    }
+
+    private boolean checkWeapon() {
+        return mc.player != null && isWeapon(mc.player.getMainHandStack());
+    }
+
+    private static boolean isCrossbow(ItemStack stack) {
+        return stack != null && !stack.isEmpty() && stack.getItem() instanceof CrossbowItem && CrossbowItem.isCharged(stack);
+    }
+
+    private static boolean isWeapon(ItemStack stack) {
+        if (stack == null || stack.isEmpty()) return false;
+        Item item = stack.getItem();
+        if (item == Items.AIR) return false;
+        return item instanceof net.minecraft.item.SwordItem
+                || item instanceof net.minecraft.item.AxeItem
+                || item instanceof net.minecraft.item.PickaxeItem
+                || item instanceof net.minecraft.item.ShovelItem
+                || item instanceof net.minecraft.item.HoeItem
+                || item instanceof net.minecraft.item.MaceItem
+                || item == Items.MACE
+                || item == net.minecraft.item.Items.BOW
+                || item == net.minecraft.item.Items.CROSSBOW;
+    }
+
+    private static boolean isArmored(LivingEntity entity) {
+        for (ItemStack stack : entity.getArmorItems()) {
+            if (!stack.isEmpty()) return true;
+        }
+        return false;
+    }
+
+    private boolean isNetheriteArmored(LivingEntity entity) {
+        for (ItemStack stack : entity.getArmorItems()) {
+            if (stack.isEmpty()) continue;
+            Item item = stack.getItem();
+            if (item == Items.NETHERITE_HELMET || item == Items.NETHERITE_CHESTPLATE
+                    || item == Items.NETHERITE_LEGGINGS || item == Items.NETHERITE_BOOTS) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isFriend(Entity entity) {
+        if (entity instanceof PlayerEntity) {
+            return Neural.INSTANCE.friendStorage.isFriend(entity.getName().getString());
+        }
+        return false;
+    }
+
+    private boolean isAimAllowed(boolean naked, boolean onlyPlayers, boolean invisibles, Entity target, boolean onlyArmored, boolean onlyNetherite) {
+        if (!(target instanceof LivingEntity living)) return false;
+        if (target instanceof ArmorStandEntity) return false;
+        if (isFriend(target)) return false;
+        if (onlyPlayers && !(target instanceof PlayerEntity)) return false;
+        if (!invisibles && living.isInvisible()) return false;
+
+        boolean armored = isArmored(living);
+        if (onlyNetherite && !isNetheriteArmored(living)) return false;
+        return (!onlyArmored || armored) && (naked || armored);
+    }
+
+    private static Vec3d getLookVector(float yaw, float pitch) {
+        float f = (float) Math.toRadians(yaw);
+        float f1 = (float) Math.toRadians(pitch);
+        double d0 = -MathHelper.sin(f) * MathHelper.cos(f1);
+        double d1 = -MathHelper.sin(f1);
+        double d2 = MathHelper.cos(f) * MathHelper.cos(f1);
+        return new Vec3d(d0, d1, d2).normalize();
+    }
+
+    private double dotProductToEntity(Vec3d look, Vec3d from, Entity target) {
+        Vec3d pos = target.getPos();
+        double d0 = pos.x - from.x;
+        double d1 = pos.y + target.getHeight() * 0.78 - from.y;
+        double d2 = pos.z - from.z;
+        double d3 = d0 * d0 + d1 * d1 + d2 * d2;
+        if (d3 < 1.0E-6) return 1.0;
+        double d4 = 1.0 / Math.sqrt(d3);
+        return look.x * d0 * d4 + look.y * d1 * d4 + look.z * d2 * d4;
+    }
+
+    private double[] getAimPoint(AimMode aimMode, Entity target) {
+        double d0 = 0.78 + aimMode.getDouble2();
+        double[] offsets = aimMode.getDoubleArrayByEntity(target);
+        double d2 = MathHelper.clamp(d0 + offsets[1], 0.05, 0.95);
+        Vec3d point = target.getPos().add(offsets[0], target.getHeight() * d2, offsets[2]);
+        Vec3d eyes = mc.player.getEyePos();
+
+        double d6 = point.x - eyes.x;
+        double d7 = point.y - eyes.y;
+        double d8 = point.z - eyes.z;
+        double d9 = Math.sqrt(d6 * d6 + d8 * d8);
+        double yaw;
+        if (d9 < 0.001) {
+            yaw = mc.player.getYaw();
+        } else {
+            yaw = Math.toDegrees(Math.atan2(-d6, d8));
+        }
+
+        double d11 = Math.sqrt(d6 * d6 + d7 * d7 + d8 * d8);
+        double pitch;
+        if (d11 < 0.001) {
+            pitch = mc.player.getPitch();
+        } else {
+            pitch = -Math.toDegrees(Math.asin(MathHelper.clamp(d7 / d11, -1.0, 1.0)));
+        }
+        return new double[]{yaw, pitch};
+    }
+
+    private Vec3d getAimPointVec3d(AimMode aimMode, Entity target) {
+        double d0 = 0.78 + aimMode.getDouble2();
+        double[] offsets = aimMode.getDoubleArrayByEntity(target);
+        double d2 = MathHelper.clamp(d0 + offsets[1], 0.05, 0.95);
+        return target.getPos().add(offsets[0], target.getHeight() * d2, offsets[2]);
+    }
+
+    private Vec3d getBodyPoint(Entity target) {
+        Vec3d eyes = mc.player.getEyePos();
+        Vec3d pos = target.getPos();
+        double horizontal = Math.sqrt(MathHelper.square(pos.x - eyes.x) + MathHelper.square(pos.z - eyes.z));
+        double heightFactor;
+        if (horizontal <= 4.0) {
+            heightFactor = 0.55;
+        } else if (horizontal <= 12.0) {
+            double t = (horizontal - 4.0) / 8.0;
+            heightFactor = 0.55 + t * 0.3;
+        } else {
+            double t = MathHelper.clamp((horizontal - 12.0) / 13.0, 0.0, 1.0);
+            heightFactor = 0.85 + t * 0.2;
+        }
+
+        double dy = pos.y + target.getHeight() * 0.5 - eyes.y;
+        if (horizontal > 0.5) {
+            heightFactor -= MathHelper.clamp(dy / horizontal * 0.15, -0.15, 0.15);
+        }
+        heightFactor = MathHelper.clamp(heightFactor, 0.2, 1.15);
+        return pos.add(0.0, target.getHeight() * heightFactor, 0.0);
+    }
+
+    private boolean isLineBlocked(Vec3d from, Vec3d to) {
+        if (mc.world == null || mc.player == null) return false;
+        return mc.world.raycast(new RaycastContext(from, to, RaycastContext.ShapeType.COLLIDER, RaycastContext.FluidHandling.NONE, mc.player)).getType() == net.minecraft.util.hit.HitResult.Type.BLOCK;
+    }
+
+    private AimMode getAimMode() {
+        String name = rotation.getCurrent();
+        for (AimMode aimMode : aimModes) {
+            if (aimMode.getText().equals(name)) return aimMode;
+        }
+        return aimModes.get(0);
+    }
+
+    private void resetAll() {
+        entity = null;
+        time = 0L;
+        time2 = 0L;
+        rotationUtil.setTime();
+        value235 = 0.0;
+        value236 = 0.0;
+        value237 = 0.0;
+        registryKey = null;
+        vec3d = null;
+        vec3d2 = null;
+        entity2 = null;
+        aimSampleMap.clear();
+        getAimMode().update2();
+    }
+
+    @Override
+    public void onDisable() {
+        resetAll();
+        super.onDisable();
+    }
+
+    @Override
+    public void onEnable() {
+        resetAll();
+        super.onEnable();
+    }
+
+    @EventLink
+    public void onAttackEntity(EventAttackEntity event) {
+        if (mc.player == null || mc.world == null) return;
+        if (event.getPlayer() != mc.player) return;
+        Entity targetEntity = event.getTarget();
+        if (targetEntity == null) return;
+
+        boolean onlyPlayers = isTargetFlag("Только игроки");
+        boolean invisibles = isTargetFlag("Невидимые");
+        boolean onlyArmored = isTargetFlag("Только в броне");
+        boolean onlyNetherite = isTargetFlag("Только в незеритовой");
+        boolean naked = isTargetFlag("Голые");
+
+        if (isAimAllowed(naked, onlyPlayers, invisibles, targetEntity, onlyArmored, onlyNetherite)) {
+            if (uderzhanieAfterUdara.get() > 0 || onlyLasthit.isState()) {
+                if (targetEntity instanceof LivingEntity) {
+                    entity2 = (LivingEntity) targetEntity;
+                    time2 = System.currentTimeMillis();
+                }
+            }
+        }
+    }
+
+    private LivingEntity findEntity() {
+        if (mc.player == null || mc.world == null) return null;
+
+        boolean crossbowMode = navodkaCArbaletom.isState() && checkCrossbow();
+        double reach = crossbowMode ? rangeArbaleta.get() : range.get();
+        double fovHalf = crossbowMode ? 45.0 : fovSetting.get() / 2.0;
+        double fovCos = Math.cos(Math.toRadians(fovHalf));
+        String priority = crossbowMode ? PRIORITY_ANGLE : prioritet.getCurrent();
+
+        boolean onlyPlayers = isTargetFlag("Только игроки");
+        boolean invisibles = isTargetFlag("Невидимые");
+        boolean onlyArmored = isTargetFlag("Только в броне");
+        boolean onlyNetherite = isTargetFlag("Только в незеритовой");
+        boolean naked = isTargetFlag("Голые");
+        boolean wallCheck = isCondition("Проверка стен");
+
+        Vec3d eyes = mc.player.getEyePos();
+        float yaw = mc.player.getYaw();
+        float pitch = mc.player.getPitch();
+        Vec3d look = getLookVector(yaw, pitch);
+
+        AimMode aimMode = getAimMode();
+        long now = System.currentTimeMillis();
+        aimSampleMap.entrySet().removeIf(entry -> now - entry.getValue().time > 2000L);
+
+        if (onlyLasthit.isState()) {
+            LivingEntity last = entity2;
+            if (last == null) return null;
+            if (!isAimAllowed(naked, onlyPlayers, invisibles, last, onlyArmored, onlyNetherite)) {
+                entity2 = null;
+                return null;
+            }
+            if (!last.isAlive() || last.getHealth() <= 0.0F) {
+                entity2 = null;
+                return null;
+            }
+            double distance = mc.player.distanceTo(last);
+            if (distance <= reach && distance >= 0.5) {
+                double dot = dotProductToEntity(look, eyes, last);
+                if (dot >= fovCos) {
+                    if (!wallCheck || !isLineBlocked(eyes, getAimPointVec3d(aimMode, last))) {
+                        return last;
+                    }
+                }
+            }
+            return null;
+        }
+
+        long holdMillis = (long) uderzhanieAfterUdara.get() * 1000L;
+        LivingEntity heldEntity = null;
+        if (holdMillis > 0) {
+            if (entity2 != null && time2 > 0 && now - time2 < holdMillis) {
+                heldEntity = entity2;
+            } else if (entity != null && time > 0 && now - time < holdMillis) {
+                heldEntity = entity;
+            }
+        }
+
+        if (heldEntity != null) {
+            if (isAimAllowed(naked, onlyPlayers, invisibles, heldEntity, onlyArmored, onlyNetherite)) {
+                if (heldEntity.isAlive() && heldEntity.getHealth() > 0.0F) {
+                    double distance = mc.player.distanceTo(heldEntity);
+                    if (distance <= reach && distance >= 0.5) {
+                        AimSample sample = aimSampleMap.get(heldEntity.getUuid());
+                        boolean teleportLagged = sample != null && now < sample.time2;
+                        if (!teleportLagged) {
+                            double dot = dotProductToEntity(look, eyes, heldEntity);
+                            if (dot >= fovCos) {
+                                boolean visible = !wallCheck || !isLineBlocked(eyes, getAimPointVec3d(aimMode, heldEntity));
+                                if (visible) return heldEntity;
+                            }
+                        }
+                    }
+                    return null;
+                }
+            }
+            if (heldEntity == entity2) {
+                entity2 = null;
+                time2 = 0L;
+            }
+        }
+
+        LivingEntity best = null;
+        double bestScore = Double.MAX_VALUE;
+        Box box = mc.player.getBoundingBox().expand(reach);
+
+        for (LivingEntity livingEntity : mc.world.getEntitiesByClass(LivingEntity.class, box, e -> true)) {
+            if (livingEntity == mc.player || !livingEntity.isAlive() || livingEntity.getHealth() <= 0.0F) continue;
+            if (livingEntity instanceof ArmorStandEntity) continue;
+            if (livingEntity.isSpectator() || !livingEntity.canHit()) continue;
+            if (onlyPlayers && !(livingEntity instanceof PlayerEntity)) continue;
+            if (isFriend(livingEntity)) continue;
+            if (!invisibles && livingEntity.isInvisible()) continue;
+
+            boolean armored = isArmored(livingEntity);
+            if (onlyNetherite && !isNetheriteArmored(livingEntity)) continue;
+            if (onlyArmored && !armored) continue;
+            if (!naked && !armored) continue;
+
+            double distance = mc.player.distanceTo(livingEntity);
+            if (distance > reach || distance < 0.5) continue;
+
+            Vec3d targetPos = livingEntity.getPos();
+            AimSample sample = aimSampleMap.computeIfAbsent(livingEntity.getUuid(), uuid -> new AimSample());
+            if (sample.vec3d != null) {
+                double moved = targetPos.distanceTo(sample.vec3d);
+                double elapsed = Math.max(1L, now - sample.time);
+                double speed = moved / (elapsed / 1000.0);
+                if (moved > 12.0 || speed > 60.0) {
+                    sample.time2 = now + 200L;
+                }
+            }
+            sample.vec3d = targetPos;
+            sample.time = now;
+            if (now < sample.time2) continue;
+
+            if (wallCheck && isLineBlocked(eyes, getAimPointVec3d(aimMode, livingEntity))) continue;
+
+            double dot = dotProductToEntity(look, eyes, livingEntity);
+            if (dot < fovCos) continue;
+
+            double score;
+            if (PRIORITY_HEALTH.equals(priority)) {
+                score = livingEntity.getHealth();
+            } else if (PRIORITY_ANGLE.equals(priority)) {
+                score = Math.toDegrees(Math.acos(MathHelper.clamp(dot, -1.0, 1.0)));
+            } else {
+                score = distance;
+            }
+
+            if (score < bestScore) {
+                bestScore = score;
+                best = livingEntity;
+            }
+        }
+
+        if (entity != null && best != null && best != entity
+                && entity.isAlive() && entity.getHealth() > 0.0F) {
+            if (isAimAllowed(naked, onlyPlayers, invisibles, entity, onlyArmored, onlyNetherite)) {
+                AimSample currentSample = aimSampleMap.get(entity.getUuid());
+                boolean teleportLagged = currentSample != null && now < currentSample.time2;
+                double distance = mc.player.distanceTo(entity);
+                boolean inReach = distance <= reach && distance >= 0.5;
+                double dot = dotProductToEntity(look, eyes, entity);
+                boolean inFov = dot >= fovCos;
+                boolean visible = !wallCheck || !isLineBlocked(eyes, getAimPointVec3d(aimMode, entity));
+                if (!teleportLagged && inReach && inFov && visible) {
+                    double score;
+                    if (PRIORITY_HEALTH.equals(priority)) {
+                        score = entity.getHealth();
+                    } else if (PRIORITY_ANGLE.equals(priority)) {
+                        score = Math.toDegrees(Math.acos(MathHelper.clamp(dot, -1.0, 1.0)));
+                    } else {
+                        score = distance;
+                    }
+                    double threshold = PRIORITY_ANGLE.equals(priority) ? 8.0 : (PRIORITY_HEALTH.equals(priority) ? 4.0 : 0.75);
+                    if (bestScore > score - threshold) {
+                        return entity;
+                    }
+                }
+            }
+        }
+
+        return best;
+    }
+
+    @EventLink
+    public void onTick(EventUpdate event) {
+        if (mc.player == null || mc.world == null) return;
+
+        if (fun.neural.api.storages.implement.FreeLookStorage.isActive()) {
+            if (entity != null) resetAll();
+            return;
+        }
+
+        RegistryKey<World> currentRegistry = mc.world.getRegistryKey();
+        if (registryKey == null) {
+            registryKey = currentRegistry;
+        } else if (!registryKey.equals(currentRegistry)) {
+            if (isCondition("Выкл. при смене мира")) {
+                setEnabled(false);
+                return;
+            }
+            registryKey = currentRegistry;
+            resetAll();
+            registryKey = currentRegistry;
+            return;
+        }
+
+        Vec3d playerPos = mc.player.getPos();
+        if (vec3d2 != null && playerPos.squaredDistanceTo(vec3d2) > 64.0) {
+            resetAll();
+            vec3d2 = playerPos;
+        } else {
+            vec3d2 = playerPos;
+            boolean crossbowMode = navodkaCArbaletom.isState() && checkCrossbow();
+            if (!isCondition("Только с оружием") || checkWeapon() || crossbowMode) {
+                if (!isCondition("Не целить в инвентаре") || !(mc.currentScreen instanceof HandledScreen<?>)) {
+                    if (!isCondition("Не целить когда ем") || !checkEating()) {
+                        double delta = rotationUtil.getDouble();
+                        LivingEntity newTarget = findEntity();
+                        if (newTarget == null) {
+                            long holdMillis = (long) uderzhanieAfterUdara.get() * 1000L;
+                            long now = System.currentTimeMillis();
+                            boolean withinHold = holdMillis > 0
+                                    && ((entity2 != null && time2 > 0 && now - time2 < holdMillis)
+                                    || (entity != null && time > 0 && now - time < holdMillis));
+                            if (!withinHold && entity != null) {
+                                resetAll();
+                            }
+                        } else {
+                            Vec3d targetPos = newTarget.getPos();
+                            if (newTarget == entity && vec3d != null) {
+                                double moved = targetPos.distanceTo(vec3d);
+                                double threshold = moved / Math.max(delta, 0.1);
+                                if (threshold > 3.0) {
+                                    value237 += threshold - 3.0;
+                                } else {
+                                    value237 = Math.max(0.0, value237 - 3.0 * delta);
+                                }
+                                if (moved > 12.0 || value237 > 20.0) {
+                                    aimSampleMap.computeIfAbsent(newTarget.getUuid(), uuid -> new AimSample()).time2 = System.currentTimeMillis() + 250L;
+                                    value237 = 0.0;
+                                    vec3d = targetPos;
+                                    return;
+                                }
+                            } else {
+                                value237 = 0.0;
+                            }
+
+                            vec3d = targetPos;
+                            AimMode aimMode = getAimMode();
+                            if (newTarget != entity) {
+                                entity = newTarget;
+                                time = System.currentTimeMillis();
+                                vec3d = targetPos;
+                                value235 = 0.0;
+                                value236 = 0.0;
+                                aimMode.update();
+                            }
+
+                            long now2 = System.currentTimeMillis();
+                            aimMode.onDoubleLongEntity(delta, now2, newTarget);
+
+                            if (crossbowMode) {
+                                smoothLookCrossbow(delta, newTarget);
+                            } else {
+                                double[] aimPoint = getAimPoint(aimMode, newTarget);
+                                float playerYaw = mc.player.getYaw();
+                                float playerPitch = mc.player.getPitch();
+                                boolean onlyX = isCondition("Только по X");
+                                double yawDiff = MathHelper.wrapDegrees(aimPoint[0] - playerYaw);
+                                double pitchDiff = aimPoint[1] - playerPitch;
+
+                                double pitchStep;
+                                if (onlyX) {
+                                    ThreadLocalRandom random = ThreadLocalRandom.current();
+                                    double hysteresis = 8.0 + random.nextDouble(4.0);
+                                    double absPitch = Math.abs(pitchDiff);
+                                    if (absPitch > hysteresis) {
+                                        double factor = 0.06 + random.nextDouble(0.06);
+                                        pitchStep = (pitchDiff - Math.signum(pitchDiff) * hysteresis) * factor;
+                                    } else {
+                                        pitchStep = 0.0;
+                                    }
+                                } else {
+                                    pitchStep = pitchDiff;
+                                }
+
+                                double totalDiff = onlyX ? Math.abs(yawDiff) : Math.sqrt(yawDiff * yawDiff + pitchStep * pitchStep);
+                                if (!(totalDiff < 0.05)) {
+                                    double[] smoothed = aimMode.smooth(yawDiff, time, value235, pitchStep, totalDiff, value236,
+                                            aimMode.getDouble(), now2, mc.player, delta);
+                                    double yawStep = smoothed[0];
+                                    double pitchOut = smoothed[1];
+                                    value235 = smoothed[2];
+                                    value236 = smoothed[3];
+
+                                    double entityDistance = mc.player.distanceTo(newTarget);
+                                    if (entityDistance < 1.5) {
+                                        double scale = MathHelper.clamp(entityDistance - 0.5, 0.05, 1.0);
+                                        yawStep *= scale;
+                                        pitchOut *= scale;
+                                        value235 = smoothed[2] * scale;
+                                        value236 = smoothed[3] * scale;
+                                    }
+
+                                    if (Math.abs(yawStep) >= 0.003 || Math.abs(pitchOut) >= 0.003) {
+                                        mc.player.setYaw(playerYaw + (float) yawStep);
+                                        mc.player.setPitch(MathHelper.clamp(playerPitch + (float) pitchOut, -90.0F, 90.0F));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private void smoothLookCrossbow(double delta, LivingEntity target) {
+        Vec3d eyes = mc.player.getEyePos();
+        Vec3d point = getBodyPoint(target);
+        double d0 = point.x - eyes.x;
+        double d1 = point.y - eyes.y;
+        double d2 = point.z - eyes.z;
+        double horizontal = Math.sqrt(d0 * d0 + d2 * d2);
+        double total = Math.sqrt(d0 * d0 + d1 * d1 + d2 * d2);
+        if (total < 0.001) return;
+
+        double targetYaw = Math.toDegrees(Math.atan2(-d0, d2));
+        double targetPitch = -Math.toDegrees(Math.asin(MathHelper.clamp(d1 / total, -1.0, 1.0)));
+        if (horizontal < 0.001) targetYaw = mc.player.getYaw();
+
+        float playerYaw = mc.player.getYaw();
+        float playerPitch = mc.player.getPitch();
+        double yawDiff = MathHelper.wrapDegrees(targetYaw - playerYaw);
+        double pitchDiff = targetPitch - playerPitch;
+        double factor = 1.0 - Math.pow(0.82, Math.max(delta, 0.01));
+        double yawStep = yawDiff * factor;
+        double pitchStep = pitchDiff * factor;
+        if (Math.abs(yawDiff) < 0.02) yawStep = yawDiff;
+        if (Math.abs(pitchDiff) < 0.02) pitchStep = pitchDiff;
+
+        mc.player.setYaw(playerYaw + (float) yawStep);
+        mc.player.setPitch(MathHelper.clamp(playerPitch + (float) pitchStep, -90.0F, 90.0F));
+    }
+
+    public LivingEntity getTarget() {
+        return entity;
+    }
+
+    public interface AimMode {
+        String getText();
+
+        List<Setting> getList();
+
+        double getDouble();
+
+        double getDouble2();
+
+        double[] getDoubleArrayByEntity(Entity entity);
+
+        void update();
+
+        void update2();
+
+        void onDoubleLongEntity(double delta, long now, Entity entity);
+
+        double[] smooth(double yawDiff, long lockTime, double accYaw, double pitchDiff, double totalDiff, double accPitch,
+                        double speed, long now, Entity player, double delta);
+    }
+
+    public static class FreeAim implements AimMode {
+        private final FloatSetting speed = new FloatSetting("Скорость", 1f, 0.1f, 5f, 0.1f);
+
+        @Override
+        public String getText() {
+            return "Свободная";
+        }
+
+        @Override
+        public List<Setting> getList() {
+            return List.of(speed);
+        }
+
+        @Override
+        public double getDouble() {
+            return speed.get();
+        }
+
+        @Override
+        public double getDouble2() {
+            return 0.0;
+        }
+
+        @Override
+        public double[] getDoubleArrayByEntity(Entity entity) {
+            return new double[]{0.0, 0.0, 0.0};
+        }
+
+        @Override
+        public void update() {
+        }
+
+        @Override
+        public void update2() {
+        }
+
+        @Override
+        public void onDoubleLongEntity(double delta, long now, Entity entity) {
+        }
+
+        @Override
+        public double[] smooth(double yawDiff, long lockTime, double accYaw, double pitchDiff, double totalDiff, double accPitch,
+                               double speed, long now, Entity player, double delta) {
+            double factor = 1.0 - Math.pow(0.78, Math.max(delta, 0.01) * Math.max(speed, 0.1));
+            double newAccYaw = accYaw + (yawDiff - accYaw) * factor;
+            double newAccPitch = accPitch + (pitchDiff - accPitch) * factor;
+            return new double[]{newAccYaw - accYaw, newAccPitch - accPitch, newAccYaw, newAccPitch};
+        }
+    }
+
+    public static class LegitAim implements AimMode {
+        private final FloatSetting speed = new FloatSetting("Скорость", 0.8f, 0.1f, 5f, 0.1f);
+
+        @Override
+        public String getText() {
+            return "Легитная";
+        }
+
+        @Override
+        public List<Setting> getList() {
+            return List.of(speed);
+        }
+
+        @Override
+        public double getDouble() {
+            return speed.get();
+        }
+
+        @Override
+        public double getDouble2() {
+            return -0.08;
+        }
+
+        @Override
+        public double[] getDoubleArrayByEntity(Entity entity) {
+            return new double[]{0.0, 0.0, 0.0};
+        }
+
+        @Override
+        public void update() {
+        }
+
+        @Override
+        public void update2() {
+        }
+
+        @Override
+        public void onDoubleLongEntity(double delta, long now, Entity entity) {
+        }
+
+        @Override
+        public double[] smooth(double yawDiff, long lockTime, double accYaw, double pitchDiff, double totalDiff, double accPitch,
+                               double speed, long now, Entity player, double delta) {
+            double factor = 1.0 - Math.pow(0.78, Math.max(delta, 0.01) * Math.max(speed, 0.1));
+            double newAccYaw = accYaw + (yawDiff - accYaw) * factor;
+            double newAccPitch = accPitch + (pitchDiff - accPitch) * factor;
+            return new double[]{newAccYaw - accYaw, newAccPitch - accPitch, newAccYaw, newAccPitch};
+        }
+    }
+
+    public static class AimSample {
+        public long time;
+        public long time2;
+        public Vec3d vec3d;
+    }
+
+    public static class RotationUtil {
+        private long lastTime = System.currentTimeMillis();
+
+        public void setTime() {
+            lastTime = System.currentTimeMillis();
+        }
+
+        public double getDouble() {
+            long now = System.currentTimeMillis();
+            double delta = (now - lastTime) / 50.0;
+            lastTime = now;
+            return Math.min(Math.max(delta, 0.0), 5.0);
+        }
+    }
+}

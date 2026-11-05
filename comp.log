@@ -1,0 +1,8 @@
+
+> Configure project :
+Fabric Loom: 1.17.20
+
+> Task :compileJava
+
+BUILD SUCCESSFUL in 5s
+1 actionable task: 1 executed

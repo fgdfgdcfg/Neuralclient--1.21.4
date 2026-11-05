@@ -1,0 +1,62 @@
+{
+	"schemaVersion": 1,
+	"id": "neural",
+	"version": "${version}",
+	"name": "Neural Client",
+	"description": "best dlc",
+	"authors": [
+		"whylol, prince"
+	],
+	"contact": {
+		"homepage": "https://fabricmc.net/",
+		"sources": "https://github.com/FabricMC/fabric-example-mod"
+	},
+	"license": "CC0-1.0",
+	"icon": "assets/neural/icon.png",
+	"environment": "*",
+	"jars": [
+		{
+			"file": "META-INF/jars/winstore.jar"
+		},
+		{
+			"file": "META-INF/jars/sodium-0.6.13.jar"
+		},
+		{
+			"file": "META-INF/jars/sodium-extra-0.6.1.jar"
+		},
+		{
+			"file": "META-INF/jars/lithium-0.15.3.jar"
+		},
+		{
+			"file": "META-INF/jars/ferritecore-7.1.3.jar"
+		},
+		{
+			"file": "META-INF/jars/entityculling-1.10.5.jar"
+		},
+		{
+			"file": "META-INF/jars/TRansition-1.0.21-1.21.4-fabric-SNAPSHOT.jar"
+		},
+		{
+			"file": "META-INF/jars/TRender-1.0.15-1.21.4-fabric-SNAPSHOT.jar"
+		}
+	],
+	"entrypoints": {
+		"main": [
+			"fun.neural.Neural::INSTANCE"
+		]
+	},
+	"mixins": [
+		"neural.mixins.json"
+	],
+	"depends": {
+		"fabricloader": ">=0.18.4",
+		"minecraft": "~1.21.4",
+		"java": ">=21",
+		"fabric-api": "*",
+		"sodium": "*",
+		"sodium-extra": "*",
+		"lithium": "*",
+		"ferritecore": "*",
+		"entityculling": "*"
+	}
+}

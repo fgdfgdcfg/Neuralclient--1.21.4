@@ -1,0 +1,239 @@
+plugins {
+	id 'fabric-loom' version "${loom_version}"
+	id 'maven-publish'
+}
+
+version = project.mod_version
+group = project.maven_group
+
+configurations {
+	shade
+	proguard
+}
+
+def baritoneJar = file("libs/baritone-standalone-fabric-1.13.1.jar")
+def baritoneApiJar = file("libs/baritone-api-fabric-1.13.1.jar")
+def netherPathfinderJar = file("libs/nether-pathfinder-1.4.1.jar")
+
+def patchedBaritoneJar = file("$buildDir/patched/baritone-standalone.jar")
+def baritoneFolderName = "winstore"
+
+tasks.register('patchBaritoneJar') {
+	inputs.file(baritoneJar)
+	outputs.file(patchedBaritoneJar)
+	doLast {
+		patchedBaritoneJar.parentFile.mkdirs()
+		def fromBytes = "baritone".getBytes('US-ASCII')
+		def toBytes = baritoneFolderName.getBytes('US-ASCII')
+		def zin = new java.util.zip.ZipInputStream(new java.io.BufferedInputStream(new java.io.FileInputStream(baritoneJar)))
+		def zout = new java.util.zip.ZipOutputStream(new java.io.BufferedOutputStream(new java.io.FileOutputStream(patchedBaritoneJar)))
+		def buf = new byte[65536]
+		def entry
+		while ((entry = zin.getNextEntry()) != null) {
+			zout.putNextEntry(new java.util.zip.ZipEntry(entry.name))
+			def bos = new java.io.ByteArrayOutputStream()
+			int n
+			while ((n = zin.read(buf)) != -1) bos.write(buf, 0, n)
+			def bytes = bos.toByteArray()
+			if (entry.name.endsWith('.class')) {
+				zout.write(patchConstantPool(bytes, fromBytes, toBytes))
+			} else {
+				zout.write(bytes)
+			}
+			zout.closeEntry()
+		}
+		zout.close()
+		zin.close()
+	}
+}
+
+static byte[] patchConstantPool(byte[] bytes, byte[] from, byte[] to) {
+	if (bytes.length < 10) return bytes
+	int count = ((bytes[8] & 0xFF) << 8) | (bytes[9] & 0xFF)
+	int pos = 10
+	byte[] out = bytes.clone()
+	for (int i = 1; i < count; i++) {
+		int tag = bytes[pos] & 0xFF
+		switch (tag) {
+			case 1:
+				int len = ((bytes[pos + 1] & 0xFF) << 8) | (bytes[pos + 2] & 0xFF)
+				if (len == from.length) {
+					boolean match = true
+					for (int k = 0; k < len; k++) {
+						if (bytes[pos + 3 + k] != from[k]) { match = false; break }
+					}
+					if (match) {
+						for (int k = 0; k < len; k++) out[pos + 3 + k] = to[k]
+					}
+				}
+				pos += 3 + len
+				break
+			case 5:
+			case 6:
+				pos += 9
+				i++
+				break
+			case 3:
+			case 4:
+			case 9:
+			case 10:
+			case 11:
+			case 12:
+			case 17:
+			case 18:
+				pos += 5
+				break
+			case 15:
+				pos += 4
+				break
+			default:
+				pos += 3
+				break
+		}
+	}
+	return out
+}
+
+base {
+	archivesName = project.archives_base_name
+}
+
+repositories {
+}
+
+dependencies {
+	    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+	    mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
+	    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+		modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+		modImplementation files("libs/optimization/sodium-0.6.13.jar")
+		modImplementation files("libs/optimization/sodium-extra-0.6.1.jar")
+		modImplementation files("libs/optimization/lithium-0.15.3.jar")
+		modImplementation files("libs/optimization/ferritecore-7.1.3.jar")
+		modImplementation files("libs/optimization/entityculling-1.10.5.jar")
+		modImplementation files("libs/optimization/TRansition-1.0.21-1.21.4-fabric-SNAPSHOT.jar")
+		modImplementation files("libs/optimization/TRender-1.0.15-1.21.4-fabric-SNAPSHOT.jar")
+		modLocalRuntime files(baritoneJar)
+		implementation files(netherPathfinderJar)
+		shade files(netherPathfinderJar)
+		implementation files("libs/jna-5.15.0.jar")
+		shade files("libs/jna-5.15.0.jar")
+	    compileOnly 'org.projectlombok:lombok:1.18.44'
+	    annotationProcessor 'org.projectlombok:lombok:1.18.44'
+	    proguard 'com.guardsquare:proguard-base:7.6.1'
+}
+
+processResources {
+	inputs.property "version", project.version
+
+	filesMatching("fabric.mod.json") {
+		expand "version": inputs.properties.version
+	}
+}
+
+tasks.withType(JavaCompile).configureEach {
+	it.options.release = 21
+	it.options.encoding = "UTF-8"
+}
+
+loom {
+	accessWidenerPath = file("src/main/resources/neural.accesswidener")
+}
+
+java {
+	withSourcesJar()
+
+	sourceCompatibility = JavaVersion.VERSION_21
+	targetCompatibility = JavaVersion.VERSION_21
+}
+
+jar {
+	inputs.property "archivesName", project.base.archivesName
+	dependsOn 'patchBaritoneJar'
+	duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+	doFirst {
+		if (!baritoneJar.exists()) {
+			throw new GradleException("Missing nested Baritone jar: ${baritoneJar}")
+		}
+		if (!netherPathfinderJar.exists()) {
+			throw new GradleException("Missing nether-pathfinder jar: ${netherPathfinderJar}")
+		}
+	}
+
+	from {
+		configurations.shade.collect { dependency ->
+			dependency.isDirectory() ? dependency : zipTree(dependency)
+		}
+	}
+
+	from(patchedBaritoneJar) {
+		into "META-INF/jars"
+		rename { "winstore.jar" }
+	}
+
+	from(fileTree(dir: "libs/optimization", include: ["*.jar"])) {
+		into "META-INF/jars"
+		exclude("*-ORIG.jar")
+	}
+
+	exclude("META-INF/*.SF", "META-INF/*.DSA", "META-INF/*.RSA")
+
+	from("LICENSE") {
+		rename { "${it}_${inputs.properties.archivesName}"}
+	}
+}
+
+publishing {
+	publications {
+		create("mavenJava", MavenPublication) {
+			artifactId = project.archives_base_name
+			from components.java
+		}
+	}
+
+	repositories {
+	}
+}
+
+task obfuscate(type: JavaExec, dependsOn: remapJar) {
+	description = 'Obfuscate the remapped jar with ProGuard'
+	group = 'obfuscation'
+	classpath = configurations.proguard
+
+	mainClass = 'proguard.ProGuard'
+
+	def inputJar = remapJar.archiveFile.get().asFile
+	def outputJar = file("${buildDir}/libs/${project.base.archivesName.get()}-${project.version}-obf.jar")
+	def mappingFile = file("${buildDir}/proguard-mapping.txt")
+	def rulesFile = file('proguard-rules.pro').text
+	def tempConfig = file("C:/Temp/proguard-neural.pro")
+
+	doFirst {
+		if (outputJar.exists()) outputJar.delete()
+
+		def injarsPath = inputJar.absolutePath.replace('\\', '/')
+		def outjarsPath = outputJar.absolutePath.replace('\\', '/')
+		def mapPath = mappingFile.absolutePath.replace('\\', '/')
+
+		def javaHome = System.getProperty('java.home').replace('\\', '/')
+
+		tempConfig.text = "-injars \"${injarsPath}\"\n"
+		tempConfig << "-outjars \"${outjarsPath}\"\n"
+		tempConfig << "-printmapping \"${mapPath}\"\n"
+		tempConfig << "-libraryjars C:/Temp/java.base.jmod\n"
+		tempConfig << "\n"
+		tempConfig << rulesFile
+	}
+
+	args = ["@${tempConfig.absolutePath.replace('\\', '/')}"]
+
+	doLast {
+		if (outputJar.exists()) {
+			inputJar.delete()
+			outputJar.renameTo(inputJar)
+			println "=== OBFUSCATION COMPLETE ==="
+			println "Obfuscated jar: ${inputJar.absolutePath}"
+			println "Mapping saved: ${mappingFile.absolutePath}"
+		}
+	}
+}

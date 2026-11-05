@@ -1,0 +1,117 @@
+
+> Configure project :
+Fabric Loom: 1.17.20
+
+> Task :clean
+
+> Task :compileJava
+Note: Some input files use or override a deprecated API.
+Note: Recompile with -Xlint:deprecation for details.
+Note: C:\Users\Minecraft love\Downloads\Neuralclient -1.21.4\src\main\java\fun\neural\api\utils\math\MathUtils.java uses unchecked or unsafe operations.
+Note: Recompile with -Xlint:unchecked for details.
+
+> Task :processResources
+> Task :classes
+> Task :patchBaritoneJar
+> Task :jar
+> Task :processIncludeJars
+> Task :remapJar
+
+> Task :obfuscate
+ProGuard, version 7.6.1
+Note: duplicate definition of library class [jdk.internal.jimage.BasicImageReader$1]
+Note: duplicate definition of library class [jdk.internal.jimage.BasicImageReader$2]
+Note: duplicate definition of library class [jdk.internal.jimage.BasicImageReader]
+Note: duplicate definition of library class [jdk.internal.jimage.ImageBufferCache$1]
+Note: duplicate definition of library class [jdk.internal.jimage.ImageBufferCache$2]
+Note: duplicate definition of library class [jdk.internal.jimage.ImageBufferCache]
+Note: duplicate definition of library class [jdk.internal.jimage.ImageHeader]
+Note: duplicate definition of library class [jdk.internal.jimage.ImageLocation]
+Note: duplicate definition of library class [jdk.internal.jimage.ImageReader$Directory]
+Note: duplicate definition of library class [jdk.internal.jimage.ImageReader$LinkNode]
+Note: duplicate definition of library class [jdk.internal.jimage.ImageReader$Node]
+Note: duplicate definition of library class [jdk.internal.jimage.ImageReader$Resource]
+Note: duplicate definition of library class [jdk.internal.jimage.ImageReader$SharedImageReader$LocationVisitor]
+Note: duplicate definition of library class [jdk.internal.jimage.ImageReader$SharedImageReader]
+Note: duplicate definition of library class [jdk.internal.jimage.ImageReader]
+Note: duplicate definition of library class [jdk.internal.jimage.ImageReaderFactory$1]
+Note: duplicate definition of library class [jdk.internal.jimage.ImageReaderFactory]
+Note: duplicate definition of library class [jdk.internal.jimage.ImageStream]
+Note: duplicate definition of library class [jdk.internal.jimage.ImageStrings]
+Note: duplicate definition of library class [jdk.internal.jimage.ImageStringsReader]
+Note: duplicate definition of library class [jdk.internal.jimage.NativeImageBuffer$1]
+Note: duplicate definition of library class [jdk.internal.jimage.NativeImageBuffer]
+Note: duplicate definition of library class [jdk.internal.jimage.decompressor.CompressIndexes]
+Note: duplicate definition of library class [jdk.internal.jimage.decompressor.CompressedResourceHeader]
+Note: duplicate definition of library class [jdk.internal.jimage.decompressor.Decompressor]
+Note: duplicate definition of library class [jdk.internal.jimage.decompressor.ResourceDecompressor$StringsProvider]
+Note: duplicate definition of library class [jdk.internal.jimage.decompressor.ResourceDecompressor]
+Note: duplicate definition of library class [jdk.internal.jimage.decompressor.ResourceDecompressorFactory]
+Note: duplicate definition of library class [jdk.internal.jimage.decompressor.ResourceDecompressorRepository]
+Note: duplicate definition of library class [jdk.internal.jimage.decompressor.SignatureParser$ParseResult]
+Note: duplicate definition of library class [jdk.internal.jimage.decompressor.SignatureParser]
+Note: duplicate definition of library class [jdk.internal.jimage.decompressor.StringSharingDecompressor]
+Note: duplicate definition of library class [jdk.internal.jimage.decompressor.StringSharingDecompressorFactory]
+Note: duplicate definition of library class [jdk.internal.jimage.decompressor.ZipDecompressor]
+Note: duplicate definition of library class [jdk.internal.jimage.decompressor.ZipDecompressorFactory]
+Note: duplicate definition of library class [jdk.internal.jrtfs.ExplodedImage$PathNode]
+Note: duplicate definition of library class [jdk.internal.jrtfs.ExplodedImage]
+Note: duplicate definition of library class [jdk.internal.jrtfs.JrtDirectoryStream$1]
+Note: duplicate definition of library class [jdk.internal.jrtfs.JrtDirectoryStream]
+Note: duplicate definition of library class [jdk.internal.jrtfs.JrtFileAttributeView$AttrID]
+Note: duplicate definition of library class [jdk.internal.jrtfs.JrtFileAttributeView]
+Note: duplicate definition of library class [jdk.internal.jrtfs.JrtFileAttributes]
+Note: duplicate definition of library class [jdk.internal.jrtfs.JrtFileStore]
+Note: duplicate definition of library class [jdk.internal.jrtfs.JrtFileSystem$1]
+Note: duplicate definition of library class [jdk.internal.jrtfs.JrtFileSystem]
+Note: duplicate definition of library class [jdk.internal.jrtfs.JrtFileSystemProvider$1]
+Note: duplicate definition of library class [jdk.internal.jrtfs.JrtFileSystemProvider$JrtFsLoader]
+Note: duplicate definition of library class [jdk.internal.jrtfs.JrtFileSystemProvider]
+Note: duplicate definition of library class [jdk.internal.jrtfs.JrtPath$1]
+Note: duplicate definition of library class [jdk.internal.jrtfs.JrtPath$2]
+Note: duplicate definition of library class [jdk.internal.jrtfs.JrtPath]
+Note: duplicate definition of library class [jdk.internal.jrtfs.JrtUtils]
+Note: duplicate definition of library class [jdk.internal.jrtfs.SystemImage$1]
+Note: duplicate definition of library class [jdk.internal.jrtfs.SystemImage$2]
+Note: duplicate definition of library class [jdk.internal.jrtfs.SystemImage]
+Note: there were 55 duplicate class definitions.
+      (https://www.guardsquare.com/proguard/manual/troubleshooting#duplicateclass)
+Note: the configuration refers to the unknown class 'net.fabricmc.api.Entrypoint'
+Note: the configuration refers to the unknown class 'org.spongepowered.asm.mixin.Mixin'
+Note: the configuration refers to the unknown class 'org.spongepowered.asm.mixin.Mixin'
+Note: the configuration refers to the unknown class 'org.spongepowered.asm.mixin.injection.Inject'
+Note: the configuration refers to the unknown class 'org.spongepowered.asm.mixin.injection.Redirect'
+Note: the configuration refers to the unknown class 'org.spongepowered.asm.mixin.Shadow'
+Note: the configuration refers to the unknown class 'org.spongepowered.asm.mixin.Unique'
+Note: the configuration refers to the unknown class 'net.fabricmc.mixin.api.env.MixinEnvironment$Side'
+Note: the configuration refers to the unknown class 'com.google.gson.annotations.SerializedName'
+Note: the configuration refers to the unknown class 'com.google.gson.annotations.SerializedName'
+Note: fun.neural.api.utils.baritone.BaritoneAntiStuck: can't find dynamically referenced class baritone.api.BaritoneAPI
+Note: fun.neural.api.utils.baritone.BaritoneAntiStuck: can't find dynamically referenced class baritone.api.utils.input.Input
+Note: fun.neural.api.utils.player.ViaProtocolUtils: can't find dynamically referenced class com.viaversion.viafabricplus.ViaFabricPlus
+Note: fun.neural.client.modules.impl.player.AutoEat: can't find dynamically referenced class baritone.api.BaritoneAPI
+Note: com.sun.jna.Klass accesses a declared constructor '<init>()' dynamically
+Note: com.sun.jna.Native accesses a field 'OPTIONS' dynamically
+Note: com.sun.jna.Structure accesses a constructor '<init>()' dynamically
+Note: com.sun.jna.ptr.ByReference accesses a method 'getValue()' dynamically
+Note: dev.babbaj.pathfinder.Octree accesses a declared field 'theUnsafe' dynamically
+Note: fun.neural.api.utils.baritone.BaritoneAntiStuck accesses a method 'getProvider()' dynamically
+Note: fun.neural.api.utils.baritone.BaritoneAntiStuck accesses a method 'getPrimaryBaritone()' dynamically
+Note: fun.neural.api.utils.baritone.BaritoneAntiStuck accesses a method 'clearAllKeys()' dynamically
+Note: fun.neural.api.utils.bot.BotSessionManager accesses a declared constructor '<init>(java.lang.String,java.util.UUID,java.lang.String,java.util.Optional,java.util.Optional,net.minecraft.class_320$class_321)' dynamically
+Note: fun.neural.api.utils.player.ViaProtocolUtils accesses a method 'getImpl()' dynamically
+Note: fun.neural.api.utils.player.ViaProtocolUtils accesses a method 'getVersion()' dynamically
+Note: fun.neural.client.modules.impl.player.AutoEat accesses a method 'clearAllKeys()' dynamically
+Note: fun.neural.client.modules.impl.player.AutoEat accesses a method 'getBlockBreakHelper()' dynamically
+Note: fun.neural.client.modules.impl.player.AutoEat accesses a method 'stopBreakingBlock()' dynamically
+Note: fun.neural.client.modules.impl.player.AutoEat accesses a method 'requestPause()' dynamically
+Note: fun.neural.client.modules.impl.player.AutoEat accesses a method 'getProvider()' dynamically
+Note: fun.neural.client.modules.impl.player.AutoEat accesses a method 'getPrimaryBaritone()' dynamically
+=== OBFUSCATION COMPLETE ===
+Obfuscated jar: C:\Users\Minecraft love\Downloads\Neuralclient -1.21.4\build\libs\NeuralClient-1.0.0.jar
+Mapping saved: C:\Users\Minecraft love\Downloads\Neuralclient -1.21.4\build\proguard-mapping.txt
+
+[Incubating] Problems report is available at: file:///C:/Users/Minecraft%20love/Downloads/Neuralclient%20-1.21.4/build/reports/problems/problems-report.html
+
+BUILD SUCCESSFUL in 50s
+8 actionable tasks: 8 executed
